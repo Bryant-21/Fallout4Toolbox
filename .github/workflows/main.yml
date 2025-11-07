@@ -57,7 +57,7 @@ jobs:
           Get-ChildItem $APP -Recurse -Include *.pdb,*.debug | Remove-Item -Force
 
       - name: Create ZIP
-        id: create_zip  # <-- ADD THIS
+        id: create_zip
         shell: pwsh
         run: |
           $tag = "${{ steps.vars.outputs.tag }}"
@@ -70,6 +70,6 @@ jobs:
         with:
           tag: ${{ steps.vars.outputs.tag }}
           name: "Fallout4Toolbox ${{ steps.vars.outputs.tag }}"
-          artifacts: ${{ steps.create_zip.outputs.zipName }}   # <-- FIXED
+          artifacts: ${{ steps.create_zip.outputs.zipName }}
           allowUpdates: true
           makeLatest: true
