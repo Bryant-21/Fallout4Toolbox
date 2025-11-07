@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: write
-  
+
 jobs:
   build:
     runs-on: windows-2022
@@ -57,6 +57,7 @@ jobs:
           Get-ChildItem $APP -Recurse -Include *.pdb,*.debug | Remove-Item -Force
 
       - name: Create ZIP
+        id: create_zip  # <-- ADD THIS
         shell: pwsh
         run: |
           $tag = "${{ steps.vars.outputs.tag }}"
@@ -69,6 +70,6 @@ jobs:
         with:
           tag: ${{ steps.vars.outputs.tag }}
           name: "Fallout4Toolbox ${{ steps.vars.outputs.tag }}"
-          artifacts: ${{ steps.create_zip.outputs.zipName }}
+          artifacts: ${{ steps.create_zip.outputs.zipName }}   # <-- FIXED
           allowUpdates: true
           makeLatest: true
