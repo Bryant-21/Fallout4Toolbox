@@ -36,17 +36,22 @@ jobs:
       - name: Build Executable
         run: pyinstaller --clean --noconfirm Fallout4Toolbox.spec --log-level INFO
 
-      - name: Copy Resources and Trim Qt
+      - name: Copy Resources, Add ChaiNNer, and Trim Qt
         shell: pwsh
         run: |
           $APP = "dist/Fallout4Toolbox"
-          $RESOURCE_TARGET = "$APP/resource"
 
-          if (-not (Test-Path $RESOURCE_TARGET)) {
-              New-Item -ItemType Directory -Path $RESOURCE_TARGET | Out-Null
-          }
+          # Resources
+          $RESOURCE_TARGET = "$APP/resource"
+          if (-not (Test-Path $RESOURCE_TARGET)) { New-Item -ItemType Directory -Path $RESOURCE_TARGET | Out-Null }
           Copy-Item -Path "resource/*" -Destination $RESOURCE_TARGET -Recurse -Force
 
+          # NEW: ChaiNNer folder + readme.txt
+          $CHAINNER_DIR = "$APP/ChaiNNer"
+          if (-not (Test-Path $CHAINNER_DIR)) { New-Item -ItemType Directory -Path $CHAINNER_DIR | Out-Null }
+          Copy-Item -Path "ChaiNNer/readme.txt" -Destination $CHAINNER_DIR -Force
+
+          # Remove WebEngine + Media junk
           Remove-Item "$APP/PySide6/Qt6WebEngine*" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "$APP/PySide6/resources/qtwebengine*" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "$APP/PySide6/Qt6Multimedia*" -Force -Recurse -ErrorAction SilentlyContinue
@@ -55,6 +60,7 @@ jobs:
           Remove-Item "$APP/PySide6/plugins/bearer" -Force -Recurse -ErrorAction SilentlyContinue
 
           Get-ChildItem $APP -Recurse -Include *.pdb,*.debug | Remove-Item -Force
+
 
       - name: Create ZIP
         id: create_zip
