@@ -1,0 +1,57 @@
+name: Build Windows Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install Requirements
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Build Executable with PyInstaller
+      run: pyinstaller --clean --noconfirm Fallout4Toolbox.spec --log-level INFO
+
+    - name: Copy Resources and Remove Unneeded Qt Stuff
+      shell: pwsh
+      run: |
+        $APP = "dist/Fallout4Toolbox"
+        $RESOURCE_TARGET = "$APP/resource"
+
+        if (-not (Test-Path $RESOURCE_TARGET)) {
+            New-Item -ItemType Directory -Path $RESOURCE_TARGET | Out-Null
+        }
+        Copy-Item -Path "resource/*" -Destination $RESOURCE_TARGET -Recurse -Force
+
+        # Remove big unused Qt components
+        Remove-Item "$APP/PySide6/Qt6WebEngine*" -Force -Recurse -ErrorAction SilentlyContinue
+        Remove-Item "$APP/PySide6/resources/qtwebengine*" -Force -Recurse -ErrorAction SilentlyContinue
+        Remove-Item "$APP/PySide6/Qt6Multimedia*" -Force -Recurse -ErrorAction SilentlyContinue
+        Remove-Item "$APP/PySide6/plugins/mediaservice" -Force -Recurse -ErrorAction SilentlyContinue
+        Remove-Item "$APP/PySide6/plugins/audio" -Force -Recurse -ErrorAction SilentlyContinue
+        Remove-Item "$APP/PySide6/plugins/bearer" -Force -Recurse -ErrorAction SilentlyContinue
+
+        # Strip debug symbols
+        Get-ChildItem $APP -Recurse -Include *.pdb,*.debug | Remove-Item -Force
+
+    - name: Create ZIP
+      run: powershell Compress-Archive -Path "dist/Fallout4Toolbox/*" -DestinationPath "Fallout4Toolbox.zip" -Force
+
+    - name: Upload ZIP to Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: Fallout4Toolbox.zip
