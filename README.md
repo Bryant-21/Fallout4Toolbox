@@ -10,7 +10,7 @@ https://github.com/microsoft/DirectXTex/releases
 
 ### Requirements
 
-[.NET needed for MIP Flooding.](https://dotnet.microsoft.com/en-us/download/dotnet/8.0/runtime)
+[.NET Desktop Runtime needed for MIP Flooding.](https://dotnet.microsoft.com/en-us/download/dotnet/6.0/runtime)
 
 ```
 pip install -r requirements.txt
