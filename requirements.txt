@@ -1,0 +1,8 @@
+scikit-image
+scikit-learn
+pyside6
+PySide6-Fluent-Widgets
+bpy
+mathutils
+imagequant
+pythonnet

@@ -1,0 +1,404 @@
+"""
+Check any of our test NIFs for correctness.
+
+assert_property is a convenient shortcut, but it doesn't demonstrate the use of pyNifly as
+well. So a lot of the tests use direct function calls.
+"""
+
+from pathlib import Path
+from pynifly import NifFile
+from nifdefs import NODEID_NONE, CycleType, EffectShaderControlledVariable, LightingShaderControlledVariable, \
+    NiKeyType, CycleType, ShaderFlags1, ShaderFlags2, BSLSPShaderType, VertexFlags, NiAVFlags
+from niflytools import NearEqual, VNearEqual, MatNearEqual
+import test_tools as TT
+
+
+def Check_daedriccuirass(nif:NifFile):
+    """Check the daedric cuirass nif file for correctness."""
+    TT.assert_property(nif, ['TorsoLow:0', 'BSLightingShaderProperty', 'Emissive_Mult'], 0.62)
+    TT.assert_property(nif, ['TorsoLow:0', 'BSLightingShaderProperty', 'BSShaderTextureSet', 'EnvMap'], r'textures\cubemaps\Ore_Ebony_e.dds')
+    TT.assert_property(nif, ['TorsoLow:0', 'BSLightingShaderProperty', 'BSShaderTextureSet', 'EnvMask'], r'textures\armor\daedric\DaedricArmor_m.dds')
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'UV_Offset_U'], 0.0)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'UV_Offset_V'], 1.0)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'UV_Scale_U'], 10.0)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'UV_Scale_V'], 10.0)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'flag_vertex_alpha'], 1)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'flag_vertex_colors'], 1)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'flag_no_fade'], 1)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'textureClampMode'], 3)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'NiAlphaProperty', 'flags'], 4333)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'BSEffectShaderPropertyFloatController', 'flags'], 72)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'BSEffectShaderPropertyFloatController', 'frequency'], 1.0)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'BSEffectShaderPropertyFloatController', 'stopTime'], 33.3333)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'BSEffectShaderPropertyFloatController', 'controlledVariable'], EffectShaderControlledVariable.V_Offset)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'BSEffectShaderPropertyFloatController', 'NiFloatInterpolator', 'NiFloatData', 'properties.keys', 'interpolation'], NiKeyType.QUADRATIC_KEY)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'BSEffectShaderPropertyFloatController', 'NiFloatInterpolator', 'NiFloatData', 'keys', 'len()'], 3)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'BSEffectShaderPropertyFloatController', 'NiFloatInterpolator', 'NiFloatData', 'keys', '1', 'time'], 3.3333)
+    TT.assert_property(nif, ['MaleTorsoGlow', 'BSEffectShaderProperty', 'BSEffectShaderPropertyFloatController', 'NiFloatInterpolator', 'NiFloatData', 'keys', '1', 'backward'], -1)
+
+    TT.assert_patheq(nif.shape_dict['MaleTorsoGlow'].textures['Diffuse'], r"textures\effects\VaporTile02.dds", "Diffuse texture")
+    TT.assert_patheq(nif.shape_dict['MaleTorsoGlow'].textures['Greyscale'], r"textures\effects\gradients\GradDisguiseShader02.dds", "Greyscale texture")
+
+
+def Check_malehead(nif:NifFile):
+    """
+    Check the Skyrim male head.
+    Checks transforms, block types, shader properties, textures.
+    """
+    TT.assert_eq(nif.shapes[0].parent.name, nif.rootName, f"Head parent")
+    if nif.game == 'SKYRIMSE':
+        TT.assert_eq(nif.shapes[0].blockname, "BSDynamicTriShape", f"Head shape blockname")
+    else:
+        TT.assert_eq(nif.shapes[0].blockname, "NiTriShape", f"Head shape blockname")
+
+    # Transforms
+    TT.assert_equiv(nif.shapes[0].transform.translation[2], 120.3, "z translation", e=0.1)
+    TT.assert_equiv(nif.shapes[0].global_to_skin.translation[2], -120.3, "z global-to-skin translation", e=0.1)
+
+    # node-to-global transform combines all the transforms to show node's position
+    # in space. Since this nif doesn't contain bone relationships, that's just
+    # the transform on the bone.
+    mat = nif.get_node_xform_to_global("NPC Spine2 [Spn2]")
+    TT.assert_equiv(mat.translation[2], 91.2488, f"xform to global for spine2")
+
+    # If the bone isn't in the nif, the node-to-global is retrieved from
+    # the reference skeleton.
+    mat2 = nif.get_node_xform_to_global("NPC L Forearm [LLar]")
+    TT.assert_equiv(mat2.translation[2], 85.7311, f"NPC L Forearm from ref skeleton")
+
+    # Partitions
+    TT.assert_eq(len(nif.shapes[0].partitions), 3, "partition count")
+    TT.assert_seteq(set([p.id for p in nif.shapes[0].partitions]), set([130, 143, 230]), "Partitions")
+    TT.assert_eq(nif.shapes[0].partitions[0].flags and 1, 1, "start-net-boneset")
+
+    # Partition tri list matches tris 1:1, so has same as number of tris. Refers 
+    # to the partitions by index into the partitioin list.
+    TT.assert_eq(len(nif.shapes[0].partition_tris), 1694, "tri count")
+    TT.assert_lt(max(nif.shapes[0].partition_tris), len(nif.shapes[0].partitions), f"max tri index")
+
+    # Shader properties accessible
+    TT.assert_eq(nif.shapes[0].shader_block_name, "BSLightingShaderProperty", "shader block name")
+    TT.assert_eq(nif.shapes[0].shader.properties.Shader_Type, BSLSPShaderType.Face_Tint, "shader type")
+    f1_expected = ShaderFlags1(
+        ShaderFlags1.SPECULAR 
+        | ShaderFlags1.SKINNED
+        | ShaderFlags1.RECEIVE_SHADOWS
+        | ShaderFlags1.CAST_SHADOWS
+        | ShaderFlags1.FACEGEN_DETAIL_MAP
+        | ShaderFlags1.MODEL_SPACE_NORMALS
+        | ShaderFlags1.OWN_EMIT
+        | ShaderFlags1.REMAPPABLE_TEXTURES
+        | ShaderFlags1.ZBUFFER_TEST
+        )
+    TT.assert_eq(nif.shapes[0].shader.properties.Shader_Flags_1, f1_expected, "shader flags 1")
+    
+    f2_expected = ShaderFlags2(
+        ShaderFlags2.ZBUFFER_WRITE
+        | ShaderFlags2.VERTEX_COLORS
+        | ShaderFlags2.ENVMAP_LIGHT_FADE
+        | ShaderFlags2.SOFT_LIGHTING
+        )
+    TT.assert_eq(nif.shapes[0].shader.properties.Shader_Flags_2, f2_expected, "shader flags 2")
+
+    TT.assert_equiv(nif.shapes[0].shader.properties.UV_Offset_U, 0.0, "uv offset u")
+    TT.assert_equiv(nif.shapes[0].shader.properties.UV_Offset_V, 0.0, "uv offset v")
+    TT.assert_equiv(nif.shapes[0].shader.properties.UV_Scale_U, 1.0, "uv scale u")
+    TT.assert_equiv(nif.shapes[0].shader.properties.UV_Scale_V, 1.0, "uv scale v")
+    TT.assert_equiv(nif.shapes[0].shader.properties.Emissive_Color, (0.0, 0.0, 0.0, 0.0), 
+                    "emissive color", e=0.01)
+    TT.assert_equiv(nif.shapes[0].shader.properties.Emissive_Mult, 1.0, "emissive mult")
+    TT.assert_eq(nif.shapes[0].shader.properties.textureClampMode, 3, "texture clamp mode")
+    TT.assert_equiv(nif.shapes[0].shader.properties.Alpha, 1.0, "alpha")
+    TT.assert_equiv(nif.shapes[0].shader.properties.Refraction_Str, 0.0, "refraction strength")
+    TT.assert_equiv(nif.shapes[0].shader.properties.Glossiness, 33.0, "glossiness")
+    TT.assert_equiv(nif.shapes[0].shader.properties.Spec_Color, (0.631, 0.761, 1.000,), 
+                    "specular color", e=0.01)
+    TT.assert_equiv(nif.shapes[0].shader.properties.Spec_Str, 2.69, "specular strength")
+    TT.assert_equiv(nif.shapes[0].shader.properties.Soft_Lighting, 0.4, "soft lighting")
+    TT.assert_equiv(nif.shapes[0].shader.properties.Rim_Light_Power, 10.0, "rim light power")
+
+    # Textures are accessible through a dictionary. There may be texture slots with empty values.
+    TT.assert_samemembers([k for k, v in nif.shapes[0].textures.items() if v],
+                          {'Diffuse', 'Normal', 'SoftLighting', 'Specular'},
+                          "texture slots")
+    TT.assert_samemembers([v.lower() for v in nif.shapes[0].textures.values() if v],
+                          {r'textures\actors\character\male\malehead.dds',
+                           r'textures\actors\character\male\malehead_msn.dds',
+                           r'textures\actors\character\male\malehead_s.dds',
+                           r'textures\actors\character\male\malehead_sk.dds'},
+                          "texture paths")
+
+
+def Check_noblechest01(nif:NifFile):
+    """Check the noblechest01 nif file for correctness."""
+    TT.assert_eq(nif.root.controller.__class__.__name__, 'NiControllerManager', "controller class")
+    TT.assert_eq(nif.root.controller.properties.flags, 76, "ControllerManager flags")
+
+    # Lid01 is the only node that is actually animated. Vanilla object palette lists all
+    # shapes in the nif. Blender export only includes the animated nodes. We think this is
+    # ok.
+    TT.assert_eq(nif.root.controller.object_palette.__class__.__name__, 'NiDefaultAVObjectPalette', "ObjectPalette class")
+    assert len(nif.root.controller.object_palette.objects) in (1, 4), f"Have correct ObjectPalette objects, found {len(nif.root.controller.object_palette.objects)}"
+    assert 'Lid01' in nif.root.controller.object_palette.objects, "Have Lid01 in ObjectPalette"
+    TT.assert_eq(nif.root.controller.object_palette.objects['Lid01'].flags, 524430, "ObjectPalette Lid01 flags")
+
+    TT.assert_eq(len(nif.root.controller.sequences), 2, "sequences count")
+    TT.assert_seteq(set(s for s in nif.root.controller.sequences), {'Close', 'Open'}, "sequences")
+    TT.assert_eq(nif.root.controller.sequences['Open'].__class__.__name__, 'NiControllerSequence', "Open sequence class")
+    TT.assert_eq(nif.root.controller.sequences['Open'].properties.cycleType, CycleType.CLAMP, "Open sequence cycleType")
+    TT.assert_eq(len(nif.root.controller.sequences['Open'].text_key_data.keys), 2, "Open sequence text_key_data keys count")
+    TT.assert_eq(nif.root.controller.sequences['Open'].text_key_data.keys[1], (0.5, 'end'), "Open sequence text_key_data key 0")
+    TT.assert_eq(len(nif.root.controller.sequences['Open'].controlled_blocks), 1, "Open sequence controlled_blocks count")
+    TT.assert_eq(nif.root.controller.sequences['Open'].controlled_blocks[0].node_name, 'Lid01', "Open sequence controlled_blocks[0] node_name")
+    TT.assert_eq(nif.root.controller.sequences['Open'].controlled_blocks[0].controller.__class__.__name__, 'NiMultiTargetTransformController', "Open sequence controlled_blocks[0] controller class")
+    TT.assert_eq(nif.root.controller.sequences['Open'].controlled_blocks[0].controller.target.id, 0, "Open sequence controlled_blocks[0] controller target id")
+    TT.assert_eq(nif.root.controller.sequences['Open'].controlled_blocks[0].interpolator.__class__.__name__, 'NiTransformInterpolator', "Open sequence controlled_blocks[0] controller interpolator class")
+    TT.assert_eq(nif.root.controller.sequences['Open'].controlled_blocks[0].interpolator.data.__class__.__name__, 'NiTransformData', "Open sequence controlled_blocks[0] controller interpolator data class")
+    TT.assert_eq(nif.root.controller.sequences['Open'].controlled_blocks[0].interpolator.data.properties.xRotations.interpolation, NiKeyType.QUADRATIC_KEY, "Open sequence controlled_blocks[0] controller interpolator data xRotations interpolation")
+    TT.assert_eq(len(nif.root.controller.sequences['Open'].controlled_blocks[0].interpolator.data.xrotations), 2, "Open sequence controlled_blocks[0] controller interpolator data xRotations count")
+    TT.assert_eq(nif.root.controller.sequences['Open'].controlled_blocks[0].interpolator.data.xrotations[1].time, 0.5, "Open sequence controlled_blocks[0] controller interpolator data xRotations[1] time")
+    TT.assert_equiv(nif.root.controller.sequences['Open'].controlled_blocks[0].interpolator.data.xrotations[1].value, -0.1222, "Open sequence controlled_blocks[0] controller interpolator data xRotations[1] value")
+
+
+def CheckNif_voidshade(nif:NifFile):
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'Emissive_Mult'], 1.7)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'Emissive_Color'], [0.8128, 0.9898, 0.5601, 0.0])
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'Shader_Flags_2', 'ShaderFlags2.VERTEX_COLORS'], 1)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'NiAlphaProperty', 'flags'], 4333)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'BSLightingShaderPropertyFloatController', 'flags'], 72)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'BSLightingShaderPropertyFloatController', 'frequency'], 1.0)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'BSLightingShaderPropertyFloatController', 'stopTime'], 16.0)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'BSLightingShaderPropertyFloatController', 'controlledVariable'], LightingShaderControlledVariable.V_Offset)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'BSLightingShaderPropertyFloatController', 'NiFloatInterpolator', 'NiFloatData', 'properties.keys', 'interpolation'], NiKeyType.LINEAR_KEY)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'BSLightingShaderPropertyFloatController', 'NiFloatInterpolator', 'NiFloatData', 'keys', 'len()'], 2)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'BSLightingShaderPropertyFloatController', 'NiFloatInterpolator', 'NiFloatData', 'keys', '0', 'time'], 0.0)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'BSLightingShaderPropertyFloatController', 'NiFloatInterpolator', 'NiFloatData', 'keys', '0', 'value'], 1.0)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'BSLightingShaderPropertyFloatController', 'NiFloatInterpolator', 'NiFloatData', 'keys', '1', 'time'], 16.0)
+    TT.assert_property(nif, ['head', 'BSLightingShaderProperty', 'BSLightingShaderPropertyFloatController', 'NiFloatInterpolator', 'NiFloatData', 'keys', '1', 'value'], 0.0)
+
+
+def Check_fo4MaleBody(nif:NifFile):
+
+    # partitions property holds segment info for FO4 nifs. Body has 7 top-level segments
+    TT.assert_eq(len(nif.shapes[0].partitions), 7, "number of partitions")
+    
+    # IDs assigned by nifly for reference
+    TT.assert_seteq(set(x.name for x in nif.shapes[0].partitions), 
+                    set(["FO4 Seg 000", "FO4 Seg 001", "FO4 Seg 002", "FO4 Seg 003", "FO4 Seg 004", "FO4 Seg 005", "FO4 Seg 006"]), 
+                    "partitions")
+
+    # Partition tri list gives the index of the associated partition for each tri in
+    # the shape, so it's the same size as number of tris in shape
+    TT.assert_eq(len(nif.shapes[0].partition_tris), 2698, "number of partition tris")
+
+    # Shape has a segment file external to the nif
+    TT.assert_eq(nif.shapes[0].segment_file, r"Meshes\Actors\Character\CharacterAssets\MaleBody.ssf", "segment file")
+
+    # Subsegments hang off the segment/partition they are a part of.  They are given
+    # names based on their "material" property.  That name includes the name of their
+    # parent, so the parent figures out its own name from its subsegments.  This is
+    # magic figured out by OS.
+    TT.assert_eq(len(nif.shapes[0].partitions[0].subsegments), 0, "Segment 0 never has subsegments")
+    TT.assert_eq(len(nif.shapes[0].partitions[1].subsegments), 0, "Body has no head subsegments")
+    TT.assert_eq(len(nif.shapes[0].partitions[2].subsegments), 4, "number of subsegments in partition right arm")
+    TT.assert_eq(nif.shapes[0].partitions[2].subsegments[0].name, "FO4 Seg 002 | 000 | Up Arm.R", "partition right arm subsegment name")
+    TT.assert_contains("FO4 Seg 002 | 003 | Lo Arm.R", [s.name for s in nif.shapes[0].partitions[2].subsegments], "partition right arm subsegment name")
+
+    # Segments and subsegments have IDs that run linearly increasing, in order. (This is a
+    # bit of an accident, but the blender layer uses it.)
+    allsegments = []
+    allnames = []
+    for p in nif.shapes[0].partitions:
+        allsegments.append(p.id)
+        allnames.append(p.name)
+        for s in p.subsegments:
+            allsegments.append(s.id)
+            allnames.append(s.name)
+
+    for i, n in enumerate(allsegments):
+        assert i == n, f"Indicies are continuous"
+
+    # Segments and subsegments are associated with triangles. There should be a
+    # (sub)segment common to all verts of every triangle.
+    assert len(nif.shapes[0].tris) == len(nif.shapes[0].partition_tris)
+    t10 = nif.shapes[0].tris[0]
+    s10 = nif.shapes[0].partition_tris[10]
+    assert allnames[s10] == "FO4 Seg 002 | 000 | Up Arm.R", f"Have correct segment: {allnames[s10]}"
+
+
+def Check_brickcolumn(nif:NifFile):
+    # Check that we can read attributes from the materials file
+    assert nif.shape_dict['DExBrickColumn01:0'].shader.materials is not None, "found material file"
+
+    TT.assert_eq(nif.shape_dict['DExBrickColumn01:0'].shader.blockname, 'BSLightingShaderProperty', "shader class")
+    # Check that the shader name path after 'data' is correct using pathlib
+    shader_path = Path(nif.shape_dict['DExBrickColumn01:0'].shader.name)
+    try:
+        data_index = shader_path.parts.index('Data')
+    except ValueError:
+        data_index = shader_path.parts.index('data')
+    after_data = Path(*shader_path.parts[data_index + 1:])
+    TT.assert_eq(str(after_data), r"materials\Architecture\Buildings\BrickRed01.BGSM", "shader name")
+    
+    # Clamp mode is CLAMP in the nif but WRAP in the BGSM. Make sure we got the bgsm value.
+    TT.assert_equiv(nif.shape_dict['DExBrickColumn01:0'].shader.properties.Env_Map_Scale, 0.5, "env mask scale")
+    TT.assert_equiv(nif.shape_dict['DExBrickColumn01:0'].shader.properties.fresnelPower, 5.0, "fresnel power")
+    TT.assert_eq(nif.shape_dict['DExBrickColumn01:0'].shader.flag_environment_mapping, True, "shader flag environment map")
+    TT.assert_eq(nif.shape_dict['DExBrickColumn01:0'].shader.flag_greyscale_color, True, "shader flag greyscale to palette color")
+    TT.assert_eq(nif.shape_dict['DExBrickColumn01:0'].shader.flag_zbuffer_write, True, "shader flag greyscale to palette color")
+    TT.assert_eq(nif.shape_dict['DExBrickColumn01:0'].shader.texture_clamp_mode, 3, "texture clamp mode")
+
+
+def Check_fo4Helmet(nif:NifFile):
+    # partitions property holds segment info for FO4 nifs. Helmet has 2 top-level segments
+    helm = nif.shape_dict['Helmet:0']
+    TT.assert_eq(len(helm.partitions), 2, "helmet partitions")
+    
+    # IDs assigned by nifly for reference
+    TT.assert_gt(helm.partitions[1].id, 0, "partition ID")
+    TT.assert_eq(helm.partitions[1].name, "FO4 Seg 001", "partition name")
+
+    # Partition tri list gives the index of the associated partition for each tri in
+    # the shape, so it's the same size as number of tris in shape
+    TT.assert_eq(len(helm.partition_tris), 2878, "Found expected tris")
+
+    # Shape has a segment file external to the nif
+    TT.assert_eq(helm.segment_file, r"Meshes\Armor\FlightHelmet\Helmet.ssf", "segment file")
+
+    # Bodypart subsegments hang off the segment/partition they are a part of.  They are given
+    # names based on their user_slot property.
+    TT.assert_gt(len(helm.partitions[1].subsegments), 0, "Shapes have subsegments")
+    TT.assert_eq(helm.partitions[1].subsegments[0].name, "FO4 Seg 001 | Hair Top | Head", "Subsegments have human-readable names")
+
+    TT.assert_eq(helm.shader_block_name, "BSLightingShaderProperty", "shader")
+
+    glass = nif.shape_dict['glass:0']
+    TT.assert_eq(glass.partitions[1].subsegments[0].name, "FO4 Seg 001 | Hair Top", "glass has no bone ID")
+
+    TT.assert_eq(glass.shader_block_name, "BSEffectShaderProperty", "effect shader")
+    TT.assert_eq(glass.shader.name, r"Materials\Armor\FlightHelmet\glass.BGEM", "shader name")
+    TT.assert_eq(glass.shader.flag_use_falloff, True, "use falloff")
+    TT.assert_eq(glass.shader.flag_model_space_normals, False, "model space normals")
+    TT.assert_eq(glass.shader.flag_environment_mapping, True, "environment mapping")
+    TT.assert_eq(glass.shader.flag_effect_lighting, True, "effect lighting")
+
+    TT.assert_eq(glass.shader.properties.textureClampMode, 3)
+    TT.assert_eq(glass.shader.properties.falloffStartOpacity, 0.1)
+    TT.assert_eq(glass.shader.properties.Emissive_Mult, 1.0)
+
+    TT.assert_eq(glass.textures['Diffuse'], "Armor/FlightHelmet/Helmet_03_d.dds", "Diffuse")
+    TT.assert_eq(glass.textures["Normal"], "Armor/FlightHelmet/Helmet_03_n.dds", "Normal")
+    TT.assert_eq(glass.textures["EnvMapMask"], "Armor/FlightHelmet/Helmet_03_s.dds", "EnvMapMask")
+
+
+def Check_blackbriarchalet(nif:NifFile):
+        glow = nif.shape_dict['L2_WindowGlow']
+        TT.assert_eq(glow.blockname, "BSLODTriShape", "shape type")
+        TT.assert_eq(NiAVFlags(glow.properties.flags).fullname, 
+                     'SELECTIVE_UPDATE | SELECTIVE_UPDATE_TRANSF | SELECTIVE_UPDATE_CONTR | NO_ANIM_SYNC_S | MESH_LOD_SKY',
+                     "shape flags")
+        TT.assert_eq(glow.shader.blockname, "BSEffectShaderProperty", "shader type")
+        TT.assert_eq(ShaderFlags1(glow.shader.properties.Shader_Flags_1).fullname,
+                     'DECAL | DYNAMIC_DECAL | EXTERNAL_EMITTANCE | ZBUFFER_TEST',
+                     "shader flags 1")
+        TT.assert_eq(ShaderFlags2(glow.shader.properties.Shader_Flags_2).fullname,
+                     'VERTEX_COLORS | EFFECT_LIGHTING',
+                     "shader flags 2")
+        
+        TT.assert_eq(glow.shader.properties.LightingInfluence, 255, "lighting influence")
+
+        win = nif.shape_dict['BlackBriarChalet:7']
+        TT.assert_equiv(win.shader.properties.parallaxInnerLayerTextureScale, [0.95, 0.95], "parallax inner layer texture scale")
+        TT.assert_patheq(win.shader.textures['Diffuse'], r"textures\architecture\riften\RiftenWindows02.dds", "Diffuse texture")
+        TT.assert_patheq(win.shader.textures['EnvMap'], r"textures\cubemaps\ShinyGlass_e.dds", "EnvMap texture")
+        TT.assert_patheq(win.shader.textures['InnerLayer'], r"textures\architecture\riften\RiftenWindowInner01.dds", "InnerLayer texture")
+
+
+def Check_dwarvenboots(nif:NifFile):
+    boots = nif.shape_dict['Shoes']
+    TT.assert_eq(boots.shader.blockname, "BSLightingShaderProperty", "shader type")
+    TT.assert_eq(boots.shader.flag_environment_mapping, True, "environment mapping flag")
+    TT.assert_eq(boots.shader.flag_rim_lighting, True, "rim lighting flag")
+    TT.assert_eq(boots.shader.flag_environment_mapping, True, "environment mapping flag")
+    TT.assert_eq(boots.shader.properties.Env_Map_Scale, 5, "env map scale")
+    TT.assert_eq(boots.shader.properties.Glossiness, 80, "glossiness")
+    TT.assert_equiv(boots.shader.properties.Spec_Color, [0.8353, 0.5843, 0.4157], "spec color")
+    TT.assert_patheq(boots.shader.textures['EnvMap'], r"textures\cubemaps\Bronze_e.dds", "EnvMap texture")
+    TT.assert_patheq(boots.shader.textures['EnvMask'], r"textures\armor\dwarven\m\DwarvenBoots_M.dds", "EnvMask texture")
+
+
+def Check_khajiithead(nif:NifFile):
+    head = nif.shape_dict['_Neutral']
+    TT.assert_eq(head.blockname, "BSDynamicTriShape", "shader type") # has tri morphs
+    TT.assert_eq(head.shader.blockname, "BSLightingShaderProperty", "shader type")
+    TT.assert_eq(head.shader.properties.Shader_Type, BSLSPShaderType.Face_Tint, "shader type")
+    TT.assert_eq(head.shader.flag_environment_mapping, False, "environment mapping flag")
+    TT.assert_eq(head.shader.flag_vertex_alpha, True, "vertex alpha flag")
+    TT.assert_eq(head.shader.flag_model_space_normals, True, "model space normals flag")
+    TT.assert_eq(head.shader.flag_soft_lighting, True, "soft lighting flag")
+    TT.assert_equiv(head.shader.properties.Spec_Color, [0.631, 0.761, 1.0], "spec color", e=0.01)
+    TT.assert_patheq(head.shader.textures['Diffuse'], r"textures\actors\character\khajiitmale\KhajiitMaleHead.dds", "Diffuse texture")
+    TT.assert_patheq(head.shader.textures['Normal'], r"textures\actors\character\khajiitmale\KhajiitMaleHead_msn.dds", "Normal texture")
+    TT.assert_patheq(head.shader.textures['SoftLighting'], r"textures\actors\character\male\MaleHead_sk.dds", "SoftLighting texture")
+    TT.assert_patheq(head.shader.textures['Specular'], r"textures\actors\character\khajiitmale\KhajiitMaleHead_s.dds", "Specular texture")
+
+
+def Check_eye(nif:NifFile):
+    eye = nif.shape_dict['EyesMale']
+    TT.assert_eq(eye.blockname, "BSDynamicTriShape", "shape block type") # has tri morphs
+    TT.assert_ne(eye.properties.vertexDesc & VertexFlags.EYEDATA, 0, "has eye data")
+    TT.assert_eq(eye.shader.blockname, "BSLightingShaderProperty", "shader block type")
+    TT.assert_eq(eye.shader.properties.Shader_Type, BSLSPShaderType.Eye_Envmap, "shader type")
+    TT.assert_eq(eye.shader.properties.Glossiness, 479, "glossiness")
+    TT.assert_patheq(eye.shader.textures['Diffuse'], r"textures\actors\character\eyes\EyeBrown.dds", "Diffuse texture")
+    TT.assert_patheq(eye.shader.textures['Normal'], r"textures\actors\character\eyes\EyeBrown_n.dds", "Normal texture")
+    TT.assert_patheq(eye.shader.textures['SoftLighting'], r"textures\actors\character\eyes\EyeBrown_sk.dds", "Subsurface texture")
+    TT.assert_patheq(eye.shader.textures['EnvMap'], r"textures\cubemaps\EyeCubeMap.dds", "cube map texture")
+    TT.assert_patheq(eye.shader.textures['EnvMask'], r"textures\actors\character\eyes\EyeEnvironmentMask_M.dds", "mask texture")
+
+
+def Check_childhead(nif:NifFile):
+    head = nif.shape_dict['ChildHead']
+    TT.assert_eq(head.blockname, "BSDynamicTriShape", "shader type") # has tri morphs
+    TT.assert_eq(head.shader.blockname, "BSLightingShaderProperty", "shader type")
+    TT.assert_eq(head.shader.properties.Shader_Type, BSLSPShaderType.Face_Tint, "shader type")
+    TT.assert_eq(head.shader.flag_vertex_alpha, False, "vertex alpha flag")
+    TT.assert_eq(head.shader.flag_model_space_normals, False, "model space normals flag")
+    TT.assert_eq(head.shader.properties.Glossiness, 80, "glossiness")
+    TT.assert_equiv(head.shader.properties.Spec_Color, [1.0, 1.0, 1.0], "spec color", e=0.01)
+    TT.assert_patheq(head.shader.textures['Diffuse'], r"textures\actors\character\malechild\HeadHuman.dds", "Diffuse texture")
+    TT.assert_patheq(head.shader.textures['Normal'], r"textures\actors\character\malechild\HeadHuman_n.dds", "Normal texture")
+
+
+def Check_kalaar(nif:NifFile):
+    """Unqiue thing about this nif is the alpha property controller."""
+    TT.assert_ne(nif.shapes[0].alpha_property.properties.controllerID, NODEID_NONE, f"Have alpha property controller")
+
+
+test_files = {
+    ("FO4", "DExBrickColumn01.nif"): Check_brickcolumn,
+    ("FO4", "Helmet.nif"): Check_fo4Helmet,
+    ("FO4", "VanillaMaleBody.nif"): Check_fo4MaleBody,
+    ("Skyrim", "blackbriarchalet_test.nif"): Check_blackbriarchalet,
+    ("Skyrim", "malehead.nif"): Check_malehead,
+    ("Skyrim", "noblechest01.nif"): Check_noblechest01,
+    ("SkyrimSE", "voidshade_1.nif"): CheckNif_voidshade,
+    ("SkyrimSE","daedriccuirass_1.nif"): Check_daedriccuirass,
+    ("SkyrimSE","dwarvenboots_envscale.nif"): Check_dwarvenboots,
+    ("SkyrimSE", "eyesmale.nif"): Check_eye,
+    ("SkyrimSE","maleheadkhajiit.nif"): Check_khajiithead,
+    ("SkyrimSE","childhead.nif"): Check_childhead,
+    ("SkyrimSE","CRSTSkinKalaar.nif"): Check_kalaar,
+}
+
+def CheckNif(nif, source=None):
+    if source:
+        p = Path(source)
+    else:
+        p = Path(nif.filepath)
+    k = (p.parts[p.parts.index('tests')+1], p.name)
+    if k in test_files:
+        print(f"Checking nif file {nif.filepath}")
+        test_files[k](nif)
+    else:
+        raise ValueError(f"No test defined for {p.name}")
