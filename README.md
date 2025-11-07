@@ -10,6 +10,8 @@ https://github.com/microsoft/DirectXTex/releases
 
 ### Requirements
 
+.NET framework for MIP Flooding. https://dotnet.microsoft.com/en-us/download/dotnet-framework/net48
+
 ```
 pip install -r requirements.txt
 ```
