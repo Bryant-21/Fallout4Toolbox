@@ -21,3 +21,6 @@ python -m src.FalloutToolbox
 ### References:
 - https://github.com/ousnius/Material-Editor
 - https://github.com/TES5Edit/TES5Edit
+
+### For Upscaling
+- https://github.com/chaiNNer-org/chaiNNer
