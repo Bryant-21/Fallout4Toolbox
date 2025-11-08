@@ -46,10 +46,10 @@ jobs:
           if (-not (Test-Path $RESOURCE_TARGET)) { New-Item -ItemType Directory -Path $RESOURCE_TARGET | Out-Null }
           Copy-Item -Path "resource/*" -Destination $RESOURCE_TARGET -Recurse -Force
 
-          # NEW: ChaiNNer folder + readme.txt
+          # NEW: ChaiNNer folder + readme.md
           $CHAINNER_DIR = "$APP/ChaiNNer"
           if (-not (Test-Path $CHAINNER_DIR)) { New-Item -ItemType Directory -Path $CHAINNER_DIR | Out-Null }
-          Copy-Item -Path "ChaiNNer/readme.txt" -Destination $CHAINNER_DIR -Force
+          Copy-Item -Path "ChaiNNer/readme.md" -Destination $CHAINNER_DIR -Force
 
           # Remove WebEngine + Media junk
           Remove-Item "$APP/PySide6/Qt6WebEngine*" -Force -Recurse -ErrorAction SilentlyContinue
