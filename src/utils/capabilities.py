@@ -10,10 +10,17 @@ def try_import(module_name):
     except Exception:
         return False
 
+def try_load_mipflooding():
+    try:
+        from mipflooding.wrapper import image_processing
+        return True
+    except Exception:
+        return False
+
 CAPABILITIES = {
     "pythonnet": try_import("pythonnet"),
     "nif_tools": try_import("io_scene_nifly"),
-    "mip_flooding": try_import("mipflooding.wrapper"),
+    "mip_flooding": try_import("mipflooding.wrapper") and try_load_mipflooding(),
     "skimage": try_import("skimage"),
     "ChaiNNer": os.path.join(get_app_root(), "ChaiNNer", "ChaiNNer.exe")
 }

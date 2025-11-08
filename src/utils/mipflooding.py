@@ -1,22 +1,8 @@
 import tempfile
 from pathlib import Path
-from typing import Optional, List
 
 from PIL import Image
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6 import QtCore
-from PySide6.QtWidgets import QWidget, QLabel, QFileDialog
-from qfluentwidgets import (
-    PushSettingCard,
-    PrimaryPushButton,
-    InfoBar,
-    FluentIcon as FIF,
-)
 
-from src.palette.palette_engine import load_image
-from src.utils.appconfig import cfg
-from src.utils.helpers import BaseWidget
-from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from utils.capabilities import CAPABILITIES
 
