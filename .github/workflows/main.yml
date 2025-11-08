@@ -49,14 +49,16 @@ jobs:
         shell: pwsh
         run: |
           $APP = "dist/Fallout4Toolbox"
-
+          
+          # Resources
           $RESOURCE_TARGET = "$APP/resource"
           if (-not (Test-Path $RESOURCE_TARGET)) { New-Item -ItemType Directory -Path $RESOURCE_TARGET | Out-Null }
-          Copy-Item -Path "resource/*" -Destination $RESOURCE_TARGET -Recurse -Force
-
+          Copy-Item -Path (Resolve-Path "resource\*") -Destination $RESOURCE_TARGET -Recurse -Force
+          
+          # ChaiNNer docs
           $CHAINNER_DIR = "$APP/ChaiNNer"
           if (-not (Test-Path $CHAINNER_DIR)) { New-Item -ItemType Directory -Path $CHAINNER_DIR | Out-Null }
-          Copy-Item -Path "ChaiNNer/readme.md" -Destination $CHAINNER_DIR -Force
+          Copy-Item -LiteralPath "ChaiNNer/readme.md" -Destination $CHAINNER_DIR -Force
 
           Remove-Item "$APP/PySide6/Qt6WebEngine*" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "$APP/PySide6/resources/qtwebengine*" -Force -Recurse -ErrorAction SilentlyContinue
