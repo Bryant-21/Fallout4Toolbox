@@ -26,20 +26,21 @@ jobs:
       - name: Set up Conda
         uses: conda-incubator/setup-miniconda@v3
         with:
+          miniconda-version: "latest"
           python-version: "3.11"
           auto-update-conda: true
           activate-environment: build-env
-          use-mamba: true
 
       - name: Install Dependencies (Conda + uv if needed)
-        shell: bash
+        shell: pwsh
         run: |
-          conda activate build-env
+          conda info
+          conda list
           pip install -r requirements.txt
           pip install pyinstaller
 
       - name: Build Executable
-        shell: bash
+        shell: pwsh
         run: |
           pyinstaller --clean --noconfirm Fallout4Toolbox.spec --log-level INFO
 
