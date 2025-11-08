@@ -141,7 +141,7 @@ class Config(QConfig):
 
 YEAR = 2025
 AUTHOR = "Bryant21"
-VERSION = '1.0.1'
+VERSION = '1.0.3'
 NEXUS_URL = "https://next.nexusmods.com/profile/Bryant21"
 HELP_URL = "https://github.com/Bryant-21/Fallout4Toolbox"
 FEEDBACK_URL = "https://github.com/Bryant-21/Fallout4Toolbox/issues"
