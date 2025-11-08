@@ -34,7 +34,6 @@ jobs:
       - name: Install Dependencies (Conda + uv if needed)
         shell: bash
         run: |
-          pip install uv
           pip install -r requirements.txt
           pip install pyinstaller
 
