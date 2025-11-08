@@ -29,7 +29,7 @@ Write-Host "Resources copied." -ForegroundColor Green
 Write-Host "Adding ChaiNNer readme..." -ForegroundColor Yellow
 $CHAINNER_DIR = Join-Path $APP_DIR "ChaiNNer"
 if (-Not (Test-Path $CHAINNER_DIR)) { New-Item -ItemType Directory -Path $CHAINNER_DIR | Out-Null }
-Copy-Item -Path "ChaiNNer\readme.txt" -Destination $CHAINNER_DIR -Force
+Copy-Item -Path "ChaiNNer\readme.md" -Destination $CHAINNER_DIR -Force
 Write-Host "ChaiNNer readme added." -ForegroundColor Green
 
 # Trim unneeded Qt junk
