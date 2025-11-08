@@ -22,7 +22,9 @@ from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.imageutils import dilation_fill_static
 from src.utils.logging_utils import logger
-from src.utils.mipflooding import _apply_mip_flooding_to_png
+from src.utils.capabilities import CAPABILITIES
+if CAPABILITIES["mip_flooding"]:
+    from src.utils.mipflooding import _apply_mip_flooding_to_png
 from src.utils.nifutils import DDS_DIFFUSE_RE, remove_padding_from_texture_using_nif_uv
 from utils.capabilities import CAPABILITIES
 from src.utils.chainner_utils import run_chainner_directory
@@ -35,7 +37,7 @@ class UVPaddingWorker(QThread):
     finished = Signal(int, int, int)
     error = Signal(str)
 
-    def __init__(self, textures_dir: str, data_root: str, output_dir: Optional[str], do_mip_flooding: bool, do_dilation: bool, do_ai_upscale: bool):
+    def __init__(self, textures_dir: str, data_root: str, output_dir: Optional[str], do_mip_flooding: bool, do_dilation: bool, ai_upscale: bool):
         super().__init__()
         self.textures_dir = textures_dir
         self.data_root = data_root
@@ -43,7 +45,7 @@ class UVPaddingWorker(QThread):
         self.do_mip_flooding = do_mip_flooding
         self.do_dilation = do_dilation
         self._stop = False
-        self.do_ai_upscale = do_ai_upscale
+        self.ai_upscale = ai_upscale
 
     def abort(self):
         self._stop = True
@@ -84,7 +86,7 @@ class UVPaddingWorker(QThread):
                         out_path = target_dir / f"{tex.stem}_nopad.png"
                         # Save base result
                         result.save(out_path, format='PNG')
-                        if self.do_ai_upscale and CAPABILITIES.get("ChaiNNer", False):
+                        if self.ai_upscale and CAPABILITIES.get("ChaiNNer", False):
                             # Defer post-processing; collect file name for batch upscaling
                             created_by_dir.setdefault(target_dir, []).append(out_path.name)
                         else:
@@ -107,7 +109,7 @@ class UVPaddingWorker(QThread):
                 if i % 10 == 0 or i == total:
                     self.info.emit(f"Processed {i}/{total} (saved={saved}, skipped={skipped}, failed={failed})")
             # If AI upscale requested, run ChaiNNer on the created files using a name list glob per directory
-            if self.do_ai_upscale and CAPABILITIES.get("ChaiNNer", False) and created_by_dir:
+            if self.ai_upscale and CAPABILITIES.get("ChaiNNer", False) and created_by_dir:
                 textures_model = _cfg.get(_cfg.upscale_textures_cfg)
                 for folder, names in created_by_dir.items():
                     try:
@@ -204,10 +206,9 @@ class UVPaddingRemoverWidget(BaseWidget):
         # Option toggles
         if CAPABILITIES["ChaiNNer"]:
             self.chk_ai_upscale = SwitchSettingCard(icon=CustomIcons.ENHANCE.icon(),
-                                                    title=self.tr("AI Upscale"),
+                                                    title=self.tr("AI Upscale, You will need a lot of VRAM/RAM"),
                                                     content=self.tr("Run AI upscaler after cutting, before mip flooding/dilation."),
                                                     configItem=cfg.do_ai_upscale)
-            self.chk_ai_upscale.switchButton.setChecked(False)
             self.addToFrame(self.chk_ai_upscale)
 
         if CAPABILITIES["mip_flooding"]:

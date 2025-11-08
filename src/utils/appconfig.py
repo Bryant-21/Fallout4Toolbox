@@ -110,7 +110,7 @@ class Config(QConfig):
     #NIF
     data_root_cfg = ConfigItem("nif", "data_root", "")
     last_open_nif = ConfigItem("nif", "last_open_nif", "")
-    do_ai_upscale = ConfigItem("nif", "do_ai_upscale", False, BoolValidator())
+    do_ai_upscale = ConfigItem("nif", "ai_upscaler", False, BoolValidator())
     textures_dir_cfg = ConfigItem("nif", "textures_dir", "")
     output_dir_cfg = ConfigItem("nif", "output_dir", "")
     mip_flooding = ConfigItem("nif", "mip_flooding", False, BoolValidator())

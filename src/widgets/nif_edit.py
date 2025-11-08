@@ -14,15 +14,19 @@ from qfluentwidgets import (
     FluentIcon as FIF,
     SwitchSettingCard, PushButton,
 )
-from src.utils.cards import ComboBoxSettingsCard
-from utils.capabilities import CAPABILITIES
+
 from palette.palette_engine import load_image
 from src.utils.appconfig import cfg
+from src.utils.capabilities import CAPABILITIES
+from src.utils.cards import ComboBoxSettingsCard
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from utils.imageutils import dilation_fill_static
-from utils.mipflooding import _apply_mip_flooding_to_png
+
+if CAPABILITIES["mip_flooding"]:
+    from utils.mipflooding import _apply_mip_flooding_to_png
+
 from utils.nifutils import load_nif, rasterize_uv_mask
 from src.utils.chainner_utils import run_chainner, get_or_download_model
 
@@ -154,11 +158,10 @@ class SingleModelUVPadWidget(BaseWidget):
         if CAPABILITIES["ChaiNNer"]:
             self.card_ai_upscale = SwitchSettingCard(
                 configItem=cfg.do_ai_upscale,
-                title=self.tr("AI Upscale"),
+                title=self.tr("AI Upscale, You will need a lot of VRAM/RAM"),
                 icon= CustomIcons.ENHANCE.icon(),
                 content=self.tr("Run AI upscaler after cutting, before mip flooding/dilation."),
             )
-            self.card_ai_upscale.switchButton.setChecked(False)
             self.addToFrame(self.card_ai_upscale)
         if CAPABILITIES["mip_flooding"]:
             self.addToFrame(self.card_mip)
@@ -173,7 +176,7 @@ class SingleModelUVPadWidget(BaseWidget):
         )
 
         self.addToFrame(self.fix_scaled_uv)
-        
+
         grid = QGridLayout()
         grid.addWidget(QLabel(self.tr("Original")), 0, 0)
         grid.addWidget(QLabel(self.tr("No-Padding")), 0, 1)
@@ -199,7 +202,7 @@ class SingleModelUVPadWidget(BaseWidget):
 
     # ----- Slots -----
     def _on_pick_texture(self) -> None:
-        file, _ = QFileDialog.getOpenFileName(self, self.tr("Select Texture"), cfg.get(cfg.data_root_cfg), "Image files (*.png *.jpg *.jpeg *.bmp *.tga *.dds)")
+        file, _ = QFileDialog.getOpenFileName(self, self.tr("Select Texture"), cfg.get(cfg.data_root_cfg) if not self.texture_path else os.path.dirname(self.texture_path), "Image files (*.png *.jpg *.jpeg *.bmp *.tga *.dds)")
         if not file:
             return
         self.texture_path = Path(file)
@@ -207,7 +210,7 @@ class SingleModelUVPadWidget(BaseWidget):
         InfoBar.success(self.tr("Texture Selected"), str(self.texture_path), parent=self)
 
     def _on_pick_model(self) -> None:
-        file, _ = QFileDialog.getOpenFileName(self, self.tr("Select NIF"), cfg.get(cfg.data_root_cfg), "NIF (*.nif)")
+        file, _ = QFileDialog.getOpenFileName(self, self.tr("Select NIF"), cfg.get(cfg.data_root_cfg) if not self.model_path else os.path.dirname(self.model_path), "NIF (*.nif)")
         if not file:
             return
         self.model_path = Path(file)

@@ -11,6 +11,7 @@ def try_import(module_name):
         return False
 
 CAPABILITIES = {
+    "pythonnet": try_import("pythonnet"),
     "nif_tools": try_import("io_scene_nifly"),
     "mip_flooding": try_import("mipflooding.wrapper"),
     "skimage": try_import("skimage"),
