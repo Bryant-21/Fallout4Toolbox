@@ -30,8 +30,9 @@ jobs:
       - name: Install Requirements
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          pip install uv
+          uv pip install -r requirements.txt
+          uv pip install pyinstaller
 
       - name: Build Executable
         run: pyinstaller --clean --noconfirm Fallout4Toolbox.spec --log-level INFO
