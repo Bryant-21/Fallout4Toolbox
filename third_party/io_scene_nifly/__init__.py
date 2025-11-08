@@ -13,16 +13,9 @@ bl_info = {
     "category": "Import-Export"
 }
 
+import os.path
 # System libraries
 import sys
-import os
-import os.path
-from contextlib import suppress
-import subprocess
-import xml.etree.ElementTree as xml
-from mathutils import Matrix, Vector, Quaternion, Euler, geometry, Color
-import codecs
-import importlib
 
 # Locate the DLL and other files we need either in their development or install locations.
 nifly_path = None

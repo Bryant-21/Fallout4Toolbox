@@ -2,7 +2,6 @@ scikit-image
 scikit-learn
 pyside6
 PySide6-Fluent-Widgets
-mathutils
 imagequant
 clr-loader==0.2.8
 pythonnet==3.0.5
