@@ -29,7 +29,6 @@ jobs:
           python-version: "3.11"
           auto-update-conda: true
           activate-environment: build-env
-          environment-file: false
           use-mamba: true
 
       - name: Install Dependencies (Conda + uv if needed)
