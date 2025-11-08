@@ -171,9 +171,9 @@ class UVPaddingRemoverWidget(BaseWidget):
         self.data_root_card.clicked.connect(self._on_pick_data_root)
 
         self.textures_dir_card = PushSettingCard(
-            self.tr("Textures Folder"),
-            CustomIcons.IMAGE.icon(stroke=True),
             self.tr("Select a folder under Data/Textures"),
+            CustomIcons.FOLDER_IMAGE.icon(stroke=True),
+            self.tr("Textures Folder"),
             content=cfg.get(cfg.textures_dir_cfg),
         )
         self.textures_dir_card.clicked.connect(self._on_pick_textures_dir)

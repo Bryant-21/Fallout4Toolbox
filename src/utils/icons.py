@@ -93,6 +93,7 @@ class CustomIcons(FluentIconBase, Enum):
     ADD_SOLID = "add-solid"
     CUT_FILM = "cut-film"
     ARROW_UP = "arrow-up"
+    FOLDER_IMAGE = "folder-image"
 
     def icon(self, theme=Theme.AUTO, color: QColor = None, stroke: bool = False) -> QIcon:
         """ create a fluent icon

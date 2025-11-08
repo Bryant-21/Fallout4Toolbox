@@ -100,7 +100,7 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         self.addSubInterface(UVPaddingRemoverWidget(self, "Bulk NIF UV Cleaner (WIP)"),
                              CustomIcons.CUT_FILM.icon(), "Bulk NIF UV Cleaner (WIP)", NavigationItemPosition.TOP)
         self.addSubInterface(SingleModelUVPadWidget(self, "Single NIF UV Cleaner"),
-                             CustomIcons.CUT.icon(), "Single NIF UV Cleaner", NavigationItemPosition.TOP)
+                             CustomIcons.CUBE.icon(stroke=True), "Single NIF UV Cleaner", NavigationItemPosition.TOP)
 
         if CAPABILITIES["ChaiNNer"]:
             from src.widgets.upscale import UpscaleWidget, CHAINNER_EXE

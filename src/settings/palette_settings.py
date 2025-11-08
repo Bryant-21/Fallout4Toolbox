@@ -81,6 +81,13 @@ class PaletteSettings(GenericSettings):
             self.tr("2 to 8"), step=2
         )
 
+        self.advanced_color_sort= SwitchSettingCard(
+            icon=CustomIcons.SPARK.icon(),
+            title=self.tr("Use Faster Color Sorting"),
+            content=self.tr("80% as good but much faster, disable to get maximum quality"),
+            configItem=cfg.ci_use_faster_sort
+        )
+
 
         self.sc_color_report = SwitchSettingCard(icon=CustomIcons.REPORT.icon(),
                                                  title=self.tr("Color Report Enabled"),
@@ -101,6 +108,7 @@ class PaletteSettings(GenericSettings):
         self.settings_group.addSettingCard(self.working_res_card)
         self.settings_group.addSettingCard(self.row_height_card)
         self.settings_group.addSettingCard(self.sc_color_report)
+        self.settings_group.addSettingCard(self.advanced_color_sort)
 
         # add cards to group
         self.setupLayout()

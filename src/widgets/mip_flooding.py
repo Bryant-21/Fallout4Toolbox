@@ -12,6 +12,8 @@ from qfluentwidgets import (
     FluentIcon as FIF,
 )
 
+from help.mip_help import MipHelp
+from settings.basic_settings import BasicSettings
 from src.palette.palette_engine import load_image
 from src.utils.appconfig import cfg
 from src.utils.helpers import BaseWidget
@@ -129,8 +131,8 @@ class MipFloodingWidget(BaseWidget):
         # Input/Output folder cards
         self.input_dir_card = PushSettingCard(
             self.tr("Input Folder"),
-            CustomIcons.IMAGE.icon(stroke=True),
-            self.tr("Select a folder containing PNG or DDS images"),
+            CustomIcons.FOLDER_IMAGE.icon(stroke=True),
+            self.tr("Select a folder containing images"),
             cfg.get(cfg.textures_dir_cfg),
         )
         self.input_dir_card.clicked.connect(self._on_pick_input_dir)
@@ -158,6 +160,12 @@ class MipFloodingWidget(BaseWidget):
         self.btn_process = PrimaryPushButton(icon=FIF.RIGHT_ARROW, text=self.tr("Process Folder"))
         self.btn_process.clicked.connect(self._on_process_folder)
         self.addButtonBarToBottom(self.btn_process)
+
+        self.settings_widget = BasicSettings(self)
+        self.settings_drawer.addWidget(self.settings_widget)
+
+        self.help_widget = MipHelp(self)
+        self.help_drawer.addWidget(self.help_widget)
 
         # Internal state
         self._input_dir: Optional[str] = None

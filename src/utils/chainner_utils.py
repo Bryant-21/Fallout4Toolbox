@@ -24,12 +24,26 @@ CHAIN_FILE_MULTIPLE = os.path.join(get_app_root(), "resource", "chain", "upscale
 
 # Known model URLs. Extend as needed.
 MODEL_URLS = {
+    "UltraSharpV2": "https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2.safetensors?download=true",
     "4x-Normal-RG0-BC1": "https://github.com/RunDevelopment/ESRGAN-models/raw/main/normals/4x-Normal-RG0-BC1.pth?download=true",
     "4x-Normal-RG0-BC7": "https://github.com/RunDevelopment/ESRGAN-models/raw/main/normals/4x-Normal-RG0-BC7.pth?download=true",
     "4x-Normal-RG0": "https://github.com/RunDevelopment/ESRGAN-models/raw/main/normals/4x-Normal-RG0.pth?download=true",
     "4x-PBRify_UpscalerV4": "https://github.com/Kim2091/Kim2091-Models/releases/download/4x-PBRify_UpscalerV4/4x-PBRify_UpscalerV4.pth?download=true",
-    "4xTextures_GTAV_rgt-s": "https://github.com/Phhofm/models/releases/download/4xTextures_GTAV_rgt-s/4xTextures_GTAV_rgt-s.safetensors?download=true",
+    "4xTextures_GTAV_rgt-s_dither": "https://huggingface.co/Phips/4xTextures_GTAV_rgt-s_dither/resolve/main/4xTextures_GTAV_rgt-s_dither.safetensors?download=true",
     "4x-PBRify_UpscalerSIR-M_V2": "https://github.com/Kim2091/Kim2091-Models/releases/download/4x-PBRify_UpscalerSIR-M_V2/4x-PBRify_UpscalerSIR-M_V2.pth?download=true",
+    "4xNomosWebPhoto_RealPLKSR": "https://github.com/Phhofm/models/releases/download/4xNomosWebPhoto_RealPLKSR/4xNomosWebPhoto_RealPLKSR.pth?download=true"
+}
+
+# Known model file extensions. Do not guess.
+MODEL_EXTS = {
+    "UltraSharpV2": ".safetensors",
+    "4x-Normal-RG0-BC1": ".pth",
+    "4x-Normal-RG0-BC7": ".pth",
+    "4x-Normal-RG0": ".pth",
+    "4x-PBRify_UpscalerV4": ".pth",
+    "4xTextures_GTAV_rgt-s_dither": ".safetensors",
+    "4x-PBRify_UpscalerSIR-M_V2": ".pth",
+    "4xNomosWebPhoto_RealPLKSR": ".pth",
 }
 
 
@@ -48,27 +62,49 @@ def ensure_models_dir() -> None:
 
 def model_download_path(model_name: str) -> str:
     """Return the default local filename under MODELS_DIR for the model.
-    Preserves given extension; if none, defaults to .onnx.
+    Preserves given extension; if none, uses known extension (MODEL_EXTS) otherwise defaults to .onnx.
     """
     ensure_models_dir()
     base = model_name
-    if not base.lower().endswith((".onnx", ".pth", ".safetensors")):
-        base += ".onnx"
+    lower = base.lower()
+    if not lower.endswith((".onnx", ".pth", ".safetensors")):
+        # Use known extension when available, do NOT guess
+        ext = MODEL_EXTS.get(model_name)
+        if ext is None:
+            ext = ".onnx"
+        base += ext
     return os.path.join(MODELS_DIR, base)
 
 
 def resolve_model_path(model_name: str) -> Optional[str]:
-    """Resolve a local model path by trying common extensions and exact name.
+    """Resolve a local model path by trying known extension first, then common ones.
     Returns None if not found.
     """
     ensure_models_dir()
     # If absolute path provided and exists
     if os.path.isabs(model_name) and os.path.exists(model_name):
         return model_name
-    base_no_ext = os.path.join(MODELS_DIR, model_name)
-    candidates = [base_no_ext]
-    for ext in (".onnx", ".pth", ".safetensors"):
-        candidates.append(base_no_ext + ext)
+
+    # If model_name already contains an extension, check it directly under MODELS_DIR
+    given_path = os.path.join(MODELS_DIR, model_name)
+    name_has_ext = os.path.splitext(model_name)[1] != ""
+
+    candidates: List[str] = []
+    if name_has_ext:
+        candidates.append(given_path)
+    else:
+        base_no_ext = os.path.join(MODELS_DIR, model_name)
+        # Prefer the known extension for this model name, if any
+        known_ext = MODEL_EXTS.get(model_name)
+        if known_ext:
+            candidates.append(base_no_ext + known_ext)
+        # Then try typical extensions
+        for ext in (".pth", ".safetensors", ".onnx"):
+            if known_ext != ext:  # avoid duplicate
+                candidates.append(base_no_ext + ext)
+        # Finally, a bare path (in case file was saved without ext)
+        candidates.append(base_no_ext)
+
     for c in candidates:
         if os.path.exists(c):
             return c

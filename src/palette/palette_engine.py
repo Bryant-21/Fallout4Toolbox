@@ -41,7 +41,8 @@ def load_image(path, format='RGB'):
             # Use -ft PNG to force PNG, single mip (-m 1), sRGB
             cmd = [
                 TEXCONV_EXE,
-                '-ft', 'PNG',
+                '-ft', 'PNG',            # Force PNG output
+                '-f', 'RGBA',            # Force 32-bit RGBA to handle BC5/other special formats
                 '-y',
                 '-m', '1',
                 '-srgb',
@@ -608,6 +609,13 @@ def remap_rgb_array_to_representatives(arr_rgb: np.ndarray, color_map: dict) -> 
 
 
 def perceptual_color_sort(colors):
+    if(cfg.get(cfg.ci_use_faster_sort)):
+        return faster_perceptual_color_sort(colors)
+    else:
+        return old_perceptual_color_sort(colors)
+
+
+def old_perceptual_color_sort(colors):
     """
     Linear perceptual color sort that creates a smooth gradient by:
     - Unwrapping hue to avoid wrap-around artifacts
@@ -679,6 +687,119 @@ def perceptual_color_sort(colors):
     end_lab = lab_current[-1]
     logger.debug(f"Gradient range: L{start_lab[0]:.1f}→L{end_lab[0]:.1f}")
 
+    start_hue = hue_angle_from_ab(start_lab[1], start_lab[2])
+    end_hue = hue_angle_from_ab(end_lab[1], end_lab[2])
+    logger.debug(f"Hue range: {start_hue:.1f}° → {end_hue:.1f}°")
+
+    return sorted_colors
+
+
+def faster_perceptual_color_sort(colors):
+    """
+    Linear perceptual color sort that creates a smooth gradient by:
+    - Unwrapping hue to avoid wrap-around artifacts
+    - Choosing an initial sort based on hue dominance (your existing policy)
+    - Optimizing with 2-opt using precomputed CIE76 distances and O(1) delta updates
+    """
+    n = len(colors)
+    if n <= 1:
+        return list(colors)
+
+    # Convert once
+    lab = rgb_to_lab_array(colors)
+    L, a, b = lab[:, 0], lab[:, 1], lab[:, 2]
+
+    # Keep your hue/chroma logic; if you prefer, you can vectorize hue as below without changing behavior:
+    # hues = (np.degrees(np.arctan2(b, a)) + 360.0) % 360.0
+    hues = np.array([hue_angle_from_ab(ai, bi) for ai, bi in zip(a, b)])
+    chromas = np.sqrt(a * a + b * b)
+
+    # --- Initial ordering (unchanged policy), but try both L secondary directions and pick cheaper ---
+    hues_unwrapped, _ = unwrap_hue(hues)
+    hue_range = float(hues_unwrapped.max() - hues_unwrapped.min())
+    is_hue_dominant = hue_range > 90.0
+
+    if is_hue_dominant:
+        cand1 = np.lexsort((L, hues_unwrapped))           # lightness ascending within hue
+        cand2 = np.lexsort((-L, hues_unwrapped))          # lightness descending within hue
+    else:
+        cand1 = np.lexsort((chromas, L))                  # L asc within narrow hue
+        cand2 = np.lexsort((chromas, -L))                 # L desc within narrow hue
+
+    # Precompute Euclidean (CIE76) pairwise distances once on the fixed lab array
+    # We’ll score both candidates quickly.
+    diffs = lab[:, None, :] - lab[None, :, :]
+    D = np.linalg.norm(diffs, axis=2).astype(np.float32)  # (n, n)
+
+    def path_cost_from_order(idx):
+        if len(idx) <= 1:
+            return 0.0
+        return float(np.sum(D[idx[:-1], idx[1:]]))
+
+    c1 = path_cost_from_order(cand1)
+    c2 = path_cost_from_order(cand2)
+    initial_order = cand1 if c1 <= c2 else cand2
+
+    # Materialize sorted copies
+    sorted_colors = [colors[i] for i in initial_order]
+    lab_current = lab[initial_order].copy()
+
+    # Rebuild D relative to lab_current to simplify indices 0..n-1 for the 2-opt step
+    diffs_curr = lab_current[:, None, :] - lab_current[None, :, :]
+    D_curr = np.linalg.norm(diffs_curr, axis=2).astype(np.float32)
+
+    # 2-opt with O(1) delta evaluation, first-improvement, absolute-epsilon acceptance
+    order = list(range(n))
+
+    def two_opt_with_delta(ord_list, Dm, max_iter):
+        m = len(ord_list)
+        if m < 4 or max_iter <= 0:
+            return ord_list
+        it = 0
+        improved_any = True
+        while improved_any and it < max_iter:
+            improved_any = False
+            it += 1
+            # Scan i,j; for open path, i in [1..m-3], j in [i+1..m-2] so edges (i-1,i) and (j,j+1) exist
+            for i in range(1, m - 2):
+                a = ord_list[i - 1]
+                b_i = ord_list[i]
+                for j in range(i + 1, m - 1):
+                    c = ord_list[j]
+                    d = ord_list[j + 1]
+                    delta = -Dm[a, b_i] - Dm[c, d] + Dm[a, c] + Dm[b_i, d]
+                    if delta < -1e-6:  # accept any real improvement (absolute epsilon)
+                        ord_list[i:j + 1] = reversed(ord_list[i:j + 1])
+                        improved_any = True
+                        break  # first-improvement: restart outer scan
+                if improved_any:
+                    break
+        return ord_list
+
+    # Decide polishing budget (keep your config, but it’s much cheaper now)
+    try:
+        max_polish_iter = int(min(cfg.get(cfg.ci_palette_color_iteration), n * 5))
+    except Exception:
+        max_polish_iter = min(16, max(1, n // 4))
+
+    if max_polish_iter > 0:
+        order = two_opt_with_delta(order, D_curr, max_polish_iter)
+        # Apply final order
+        if order != list(range(n)):
+            sorted_colors = [sorted_colors[i] for i in order]
+            lab_current = lab_current[order]
+
+    # Metrics & logging
+    total_de = float(np.sum(np.linalg.norm(lab_current[1:] - lab_current[:-1], axis=1)))
+    max_de = float(np.max(np.linalg.norm(lab_current[1:] - lab_current[:-1], axis=1))) if n > 1 else 0.0
+
+    method = ("hue-guided" if is_hue_dominant else "L/C-guided") + ("+2opt" if max_polish_iter > 0 else "")
+    logger.debug(f"Linear gradient sort complete ({method}): {n} colors")
+    logger.debug(f"Total ΔE: {total_de:.3f}, Average ΔE: {total_de / (n - 1) if n > 1 else 0:.3f}, Max ΔE: {max_de:.3f}")
+
+    start_lab = lab_current[0]
+    end_lab = lab_current[-1]
+    logger.debug(f"Gradient range: L{start_lab[0]:.1f}→L{end_lab[0]:.1f}")
     start_hue = hue_angle_from_ab(start_lab[1], start_lab[2])
     end_hue = hue_angle_from_ab(end_lab[1], end_lab[2])
     logger.debug(f"Hue range: {start_hue:.1f}° → {end_hue:.1f}°")

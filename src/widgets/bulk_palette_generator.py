@@ -578,9 +578,9 @@ class BulkPaletteWidget(BaseWidget):
 
         # Directory selection
         self.dir_card = PushSettingCard(
-            self.tr("Texture Directory"),
-            FIF.FOLDER,
             self.tr("Directory containing textures"),
+            CustomIcons.FOLDER_IMAGE.icon(stroke=True),
+            self.tr("Texture Directory"),
             self.tr("No directory selected")
         )
         self.dir_card.clicked.connect(self._choose_directory)

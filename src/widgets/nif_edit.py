@@ -15,7 +15,9 @@ from qfluentwidgets import (
     SwitchSettingCard, PushButton,
 )
 
+from help.nif_help import NifHelp
 from palette.palette_engine import load_image
+from settings.basic_settings import BasicSettings
 from src.utils.appconfig import cfg
 from src.utils.capabilities import CAPABILITIES
 from src.utils.cards import ComboBoxSettingsCard
@@ -189,6 +191,12 @@ class SingleModelUVPadWidget(BaseWidget):
 
         self.buttons_layout.addWidget(self.btn_preview, stretch=1)
         self.addButtonBarToBottom(self.btn_save)
+
+        self.settings_widget = BasicSettings(self)
+        self.settings_drawer.addWidget(self.settings_widget)
+
+        self.help_widget = NifHelp(self)
+        self.help_drawer.addWidget(self.help_widget)
 
         self._connect()
 

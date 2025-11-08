@@ -76,6 +76,7 @@ class Config(QConfig):
     ci_include_subdirs = ConfigItem("palette", "include_subdirs", True, BoolValidator())
     ci_group_name = ConfigItem("palette", "group_name", "")
     ci_lower_quant_factor = OptionsConfigItem("palette", "lower_quant_factor", 1.0, OptionsValidator([1.0, 0.5]))
+    ci_use_faster_sort = ConfigItem("palette", "faster_color_sort", True, BoolValidator())
 
     #theme
     themeColor = ColorConfigItem("QFluentWidgets", "ThemeColor", '#ffa11d', restart=True)
@@ -135,13 +136,15 @@ class Config(QConfig):
 
     upscale_textures_cfg = ConfigItem("upscaler", "textures", "4x-PBRify_UpscalerV4", OptionsValidator([
         "4x-PBRify_UpscalerV4",
-        "4xTextures_GTAV_rgt-s",
-        "4x-PBRify_UpscalerSIR-M_V2"
+        "4xTextures_GTAV_rgt-s_dither",
+        "4x-PBRify_UpscalerSIR-M_V2",
+        "UltraSharpV2",
+        "4xNomosWebPhoto_RealPLKSR"
     ]))
 
 YEAR = 2025
 AUTHOR = "Bryant21"
-VERSION = '1.0.3'
+VERSION = '1.0.5'
 NEXUS_URL = "https://next.nexusmods.com/profile/Bryant21"
 HELP_URL = "https://github.com/Bryant-21/Fallout4Toolbox"
 FEEDBACK_URL = "https://github.com/Bryant-21/Fallout4Toolbox/issues"

@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import sys
+import os
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs
 from glob import glob
 

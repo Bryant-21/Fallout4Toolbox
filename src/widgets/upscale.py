@@ -12,6 +12,8 @@ from qfluentwidgets import (
     FluentIcon as FIF,
 )
 
+from help.upscaler_help import UpscalerHelp
+from settings.basic_settings import BasicSettings
 from src.palette.palette_engine import load_image
 from src.utils.appconfig import cfg
 from src.utils.chainner_utils import CHAINNER_EXE, run_chainner, resolve_model_path, get_or_download_model, upscale_directory_two_pass
@@ -124,7 +126,7 @@ class UpscaleWidget(BaseWidget):
         # Cards
         self.folder_card = PushSettingCard(
             self.tr("Textures Folder"),
-            CustomIcons.IMAGE.icon(stroke=True),
+            CustomIcons.FOLDER_IMAGE.icon(stroke=True),
             self.tr("Select a folder with textures"),
             cfg.get(cfg.convert_dir_cfg),
         )
@@ -202,6 +204,12 @@ class UpscaleWidget(BaseWidget):
 
         self.buttons_layout.addWidget(self.btn_preview, stretch=1)
         self.addButtonBarToBottom(self.btn_process)
+
+        self.settings_widget = BasicSettings(self)
+        self.settings_drawer.addWidget(self.settings_widget)
+
+        self.help_widget = UpscalerHelp(self)
+        self.help_drawer.addWidget(self.help_widget)
 
         # Internal
         self.current_preview_file: Optional[str] = None
