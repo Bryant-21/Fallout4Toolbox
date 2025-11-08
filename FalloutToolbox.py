@@ -4,10 +4,9 @@ import sys
 import traceback
 
 from PySide6 import QtWidgets
-from PySide6.QtCore import Slot
-from PySide6.QtGui import QIcon, QCursor
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
-from qfluentwidgets import FluentIcon as FIF, StateToolTip, ProgressRing, IndeterminateProgressRing, MessageBox, Dialog
+from qfluentwidgets import FluentIcon as FIF, IndeterminateProgressRing, Dialog
 from qfluentwidgets import Theme, setTheme, NavigationItemPosition
 
 from src.utils.appconfig import VERSION
@@ -103,7 +102,7 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
                              CustomIcons.CUBE.icon(stroke=True), "Single NIF UV Cleaner", NavigationItemPosition.TOP)
 
         if CAPABILITIES["ChaiNNer"]:
-            from src.widgets.upscale import UpscaleWidget, CHAINNER_EXE
+            from src.widgets.upscale import UpscaleWidget
             self.addSubInterface(UpscaleWidget(self, "Upscale"), CustomIcons.ENHANCE.icon(), "Upscale", NavigationItemPosition.TOP)
 
         self.addSubInterface(MainSettings(self), FIF.SETTING, 'Settings', NavigationItemPosition.BOTTOM)

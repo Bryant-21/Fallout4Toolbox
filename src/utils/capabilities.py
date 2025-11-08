@@ -1,8 +1,8 @@
 import os
 import traceback
 
-from utils.filesystem_utils import get_app_root
-from utils.logging_utils import logger
+from src.utils.filesystem_utils import get_app_root
+from src.utils.logging_utils import logger
 
 def try_import(module_name):
     try:
