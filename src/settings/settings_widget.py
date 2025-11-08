@@ -1,25 +1,16 @@
-import os
-
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QWidget, QFileDialog
-from qfluentwidgets import FluentIcon as FIF, SettingCardGroup, isDarkTheme, PushSettingCard, InfoBar, HyperlinkCard, \
+from qfluentwidgets import FluentIcon as FIF, SettingCardGroup, InfoBar, HyperlinkCard, \
     CustomColorSettingCard, OptionsSettingCard
-from qfluentwidgets import ScrollArea, ExpandLayout
 
+from settings.generic_settings import GenericSettings
 from src.utils.appconfig import cfg, HELP_URL, NEXUS_URL, VERSION, YEAR, AUTHOR, KOFI_URL, DISCORD_URL
-from src.utils.cards import SpinSettingCard
 from src.utils.icons import CustomIcons
-from utils.filesystem_utils import get_app_root
 
 
-class MainSettings(ScrollArea):
+class MainSettings(GenericSettings):
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('Settings')
-        self.title = self.tr('Settings')
-        self.scroll_widget = QWidget()
-        self.expand_layout = ExpandLayout(self.scroll_widget)
         self.personalGroup = SettingCardGroup(self.tr('Personalization'), self.scroll_widget)
 
         self.themeColorCard = CustomColorSettingCard(
@@ -81,51 +72,23 @@ class MainSettings(ScrollArea):
             self.aboutGroup
         )
 
-
-
-
         self.__initWidget()
 
     def __initWidget(self):
-        self.resize(1000, 800)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setViewportMargins(0, 0, 0, 20)
-        self.setWidget(self.scroll_widget)
-        self.setWidgetResizable(True)
-
-        # initialize style sheet
-        self.__setQss()
-
-        # initialize layout
-        self.__initLayout()
-
-    def __initLayout(self):
-
-
         self.personalGroup.addSettingCard(self.themeColorCard)
         self.personalGroup.addSettingCard(self.zoomCard)
-
         self.aboutGroup.addSettingCard(self.helpCard)
         self.aboutGroup.addSettingCard(self.supportCard)
         self.aboutGroup.addSettingCard(self.aboutCard)
         self.aboutGroup.addSettingCard(self.discord)
-
-        # add setting card group to layout
-        self.expand_layout.setSpacing(28)
-        self.expand_layout.setContentsMargins(15, 0, 15, 0)
 
         self.expand_layout.addWidget(self.personalGroup)
         self.expand_layout.addWidget(self.aboutGroup)
 
         cfg.appRestartSig.connect(self.__showRestartTooltip)
 
-    def __setQss(self):
-        """ set style sheet """
-        self.scroll_widget.setObjectName('scrollWidget')
-
-        theme = 'dark' if isDarkTheme() else 'light'
-        with open(os.path.join(get_app_root(), 'resource', 'qss', theme, 'setting_interface.qss'), encoding='utf-8') as f:
-            self.setStyleSheet(f.read())
+        # add cards to group
+        self.setupLayout()
 
 
     def __showRestartTooltip(self):

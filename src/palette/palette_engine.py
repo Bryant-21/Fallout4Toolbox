@@ -8,11 +8,11 @@ from PIL import Image
 from PIL.Image import Quantize, Palette
 from skimage.color import rgb2lab, deltaE_ciede2000
 
-from src.utils.appconfig import cfg
+from src.utils.appconfig import cfg, TEXCONV_EXE
 from src.utils.logging_utils import logger
 
 
-def load_image(path, texconv_path=None, format='RGB'):
+def load_image(path, format='RGB'):
     """Load an image path into a PIL Image.
 
     - For non-DDS formats, uses PIL directly and converts to requested 'format' (default RGB).
@@ -20,7 +20,6 @@ def load_image(path, texconv_path=None, format='RGB'):
 
     Args:
         path (str): Input image path.
-        texconv_path (str|None): Full path to texconv.exe. Required when reading .dds.
         format (str): Desired PIL mode for the returned image, e.g., 'RGB' or 'RGBA'.
 
     Returns:
@@ -36,16 +35,12 @@ def load_image(path, texconv_path=None, format='RGB'):
             with Image.open(path) as im:
                 return im.convert(format)
 
-        # DDS path: require texconv
-        if not texconv_path or not os.path.isfile(texconv_path):
-            raise Exception("texconv.exe path is not set. Please configure 'texconv' in Settings.")
-
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             # Run texconv to output PNG into tmpdir
             # Use -ft PNG to force PNG, single mip (-m 1), sRGB
             cmd = [
-                texconv_path,
+                TEXCONV_EXE,
                 '-ft', 'PNG',
                 '-y',
                 '-m', '1',
@@ -86,7 +81,7 @@ def load_image(path, texconv_path=None, format='RGB'):
         raise
 
 
-def quantize_image(image, method):
+def quantize_image(image, method, use_lower_quant=False):
     """Quantize image using the specified method
 
     Implements optional two-stage strategy (1): over-quantize per-image to preserve rare colors,
@@ -101,7 +96,7 @@ def quantize_image(image, method):
     use_advanced = bool(cfg.get(cfg.ci_advanced_quant)) if hasattr(cfg, 'ci_advanced_quant') else False
     # Optional lower-per-image quantization factor (e.g., 0.5 -> 128 when final is 256)
     try:
-        lower_factor = float(cfg.get(cfg.ci_lower_quant_factor)) if hasattr(cfg, 'ci_lower_quant_factor') else 1.0
+        lower_factor = float(cfg.get(cfg.ci_lower_quant_factor)) if cfg.get(cfg.ci_lower_quant_factor) and use_lower_quant else 1.0
     except Exception:
         lower_factor = 1.0
     lower_factor = 1.0 if lower_factor is None else float(lower_factor)
@@ -341,14 +336,14 @@ def analyze_color_distribution(quantized_array):
     return distribution
 
 
-def convert_to_dds(input_path, output_path, texconv_path, is_palette=False, palette_width=256, palette_height=8):
+def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256, palette_height=8):
     """Convert image to DDS format using texconv.exe"""
     logger.debug(f"Converting to DDS: {input_path} -> {output_path}")
     try:
         if is_palette:
             # Use provided Palette dimensions
             cmd = [
-                texconv_path,
+                TEXCONV_EXE,
                 '-f', 'BC7_UNORM',
                 '-y',
                 '-m', '1',
@@ -360,7 +355,7 @@ def convert_to_dds(input_path, output_path, texconv_path, is_palette=False, pale
             ]
         else:
             cmd = [
-                texconv_path,
+                TEXCONV_EXE,
                 '-f', 'BC7_UNORM',
                 '-y',
                 '-m', '1',
@@ -438,8 +433,6 @@ def reduce_colors_lab_de00_with_hue_balance(unique_colors: np.ndarray, counts: n
     """
     if unique_colors is None or len(unique_colors) == 0:
         return [], {}, []
-
-    from .palette_engine import rgb_to_lab_array, hue_angle_from_ab  # self-import safe in-module
 
     colors = unique_colors.astype(np.uint8)
     freqs = counts.astype(np.float64)

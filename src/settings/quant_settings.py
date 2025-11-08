@@ -13,7 +13,6 @@ class QuantSettings(GenericSettings):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-
         self.palette_size_card = RadioSettingCard(
             cfg.ci_default_palette_size,
             CustomIcons.WIDTH.icon(),

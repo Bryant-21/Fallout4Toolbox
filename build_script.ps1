@@ -4,15 +4,9 @@ Write-Host "Starting build process..." -ForegroundColor Cyan
 
 # Clean previous build output
 Write-Host "`nCleaning previous build..." -ForegroundColor Yellow
-if (Test-Path "dist") {
-    Remove-Item "dist" -Recurse -Force
-}
-if (Test-Path "build") {
-    Remove-Item "build" -Recurse -Force
-}
-if (Test-Path "release") {
-    Remove-Item "release" -Recurse -Force
-}
+if (Test-Path "dist") { Remove-Item "dist" -Recurse -Force }
+if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
+if (Test-Path "release") { Remove-Item "release" -Recurse -Force }
 Write-Host "Previous build removed." -ForegroundColor Green
 
 # Run PyInstaller with the spec file
@@ -24,20 +18,22 @@ Write-Host "PyInstaller completed in $pyinstallerTime" -ForegroundColor Green
 # Determine output app folder
 $APP_DIR = Join-Path "dist" "Fallout4Toolbox"
 
-# Copy resources (only if needed)
+# Copy resources
 Write-Host "`n[2/3] Copying resources..." -ForegroundColor Yellow
 $RESOURCE_TARGET_DIR = Join-Path $APP_DIR "resource"
-
-if (-Not (Test-Path $RESOURCE_TARGET_DIR)) {
-    New-Item -ItemType Directory -Path $RESOURCE_TARGET_DIR | Out-Null
-}
-
+if (-Not (Test-Path $RESOURCE_TARGET_DIR)) { New-Item -ItemType Directory -Path $RESOURCE_TARGET_DIR | Out-Null }
 Copy-Item -Path "resource\*" -Destination $RESOURCE_TARGET_DIR -Recurse -Force
-Write-Host "Resources copied to $RESOURCE_TARGET_DIR" -ForegroundColor Green
+Write-Host "Resources copied." -ForegroundColor Green
 
+# --- NEW: Create ChaiNNer info folder ---
+Write-Host "Adding ChaiNNer readme..." -ForegroundColor Yellow
+$CHAINNER_DIR = Join-Path $APP_DIR "ChaiNNer"
+if (-Not (Test-Path $CHAINNER_DIR)) { New-Item -ItemType Directory -Path $CHAINNER_DIR | Out-Null }
+Copy-Item -Path "ChaiNNer\readme.txt" -Destination $CHAINNER_DIR -Force
+Write-Host "ChaiNNer readme added." -ForegroundColor Green
 
-$APP = "dist\Fallout4Toolbox"
-
+# Trim unneeded Qt junk
+$APP = $APP_DIR
 Remove-Item "$APP\PySide6\Qt6WebEngine*" -Force -Recurse -ErrorAction SilentlyContinue
 Remove-Item "$APP\PySide6\resources\qtwebengine*" -Force -Recurse -ErrorAction SilentlyContinue
 Remove-Item "$APP\PySide6\Qt6Multimedia*" -Force -Recurse -ErrorAction SilentlyContinue
@@ -49,17 +45,11 @@ Get-ChildItem $APP -Recurse -Include *.pdb,*.debug | Remove-Item -Force
 # Create release zip
 Write-Host "`n[3/3] Creating release zip..." -ForegroundColor Yellow
 $RELEASE_DIR = "release"
-$ZIP_NAME = "Fallout4Toolbox_v1.0.0.zip"
-
-if (-Not (Test-Path $RELEASE_DIR)) {
-    New-Item -ItemType Directory -Path $RELEASE_DIR | Out-Null
-}
+$ZIP_NAME = "Fallout4Toolbox_v1.0.1.zip"
+if (-Not (Test-Path $RELEASE_DIR)) { New-Item -ItemType Directory -Path $RELEASE_DIR | Out-Null }
 
 $ZIP_PATH = Join-Path $RELEASE_DIR $ZIP_NAME
-
-if (Test-Path $ZIP_PATH) {
-    Remove-Item $ZIP_PATH -Force
-}
+if (Test-Path $ZIP_PATH) { Remove-Item $ZIP_PATH -Force }
 
 Compress-Archive -Path "$APP_DIR\*" -DestinationPath $ZIP_PATH
 $compressionTime = $Stopwatch.Elapsed.ToString('hh\:mm\:ss')

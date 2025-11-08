@@ -29,7 +29,7 @@ from utils.cards import TextSettingCard
 
 # Reuse supported extensions from bulk palette if available, otherwise define here
 try:
-    from src.widgets.bulk_palette import SUPPORTED_EXTS, BulkPaletteWorker
+    from src.widgets.bulk_palette_generator import SUPPORTED_EXTS, BulkPaletteWorker
 except Exception:
     SUPPORTED_EXTS = {'.png', '.jpg', '.jpeg', '.tga', '.bmp', '.tif', '.tiff', '.dds'}
     BulkPaletteWorker = None
@@ -98,7 +98,7 @@ class CombinePalettesWorker(QThread):
                 else:
                     pal_path = pal_paths[0]
 
-                pal_img = load_image(pal_path, cfg.get(cfg.texconv_file))
+                pal_img = load_image(pal_path)
                 pal_img = pal_img.convert('RGB')
                 pal_arr = np.array(pal_img)
                 # The palette image is rows of repeated palette colors; take first row width as palette size
@@ -146,7 +146,7 @@ class CombinePalettesWorker(QThread):
             for g in self.groups:
                 pal_colors = group_index_to_color.get(g, [])
                 for item in group_greys[g]:
-                    img = load_image(item['path'], cfg.get(cfg.texconv_file))
+                    img = load_image(item['path'])
                     imgL = img.convert('L')
                     arr = np.array(imgL)
                     # Validate indices within palette width
@@ -240,7 +240,7 @@ class CombinePalettesWorker(QThread):
                         idx_to_unified[i] = int(palette_index_lut[tuple(rep)])
 
                 for item in group_greys[g]:
-                    img = load_image(item['path'], cfg.get(cfg.texconv_file))
+                    img = load_image(item['path'])
                     arrL = np.array(img.convert('L'))
                     # Map indices
                     flat = arrL.reshape(-1)
@@ -262,7 +262,7 @@ class CombinePalettesWorker(QThread):
                         Image.fromarray(grey_indices, mode='L').save(tmp_grey_png)
                         grey_out = os.path.join(self.output_dir, grey_base + '.dds')
                         try:
-                            convert_to_dds(tmp_grey_png, grey_out, cfg.get(cfg.texconv_file), is_palette=False)
+                            convert_to_dds(tmp_grey_png, grey_out, is_palette=False)
                         finally:
                             try:
                                 os.remove(tmp_grey_png)
@@ -274,7 +274,7 @@ class CombinePalettesWorker(QThread):
                         Image.fromarray(color_arr.astype(np.uint8), mode='RGB').save(tmp_color_png)
                         color_out = os.path.join(self.output_dir, color_base + '.dds')
                         try:
-                            convert_to_dds(tmp_color_png, color_out, cfg.get(cfg.texconv_file), is_palette=False)
+                            convert_to_dds(tmp_color_png, color_out, is_palette=False)
                         finally:
                             try:
                                 os.remove(tmp_color_png)
@@ -315,7 +315,7 @@ class CombinePalettesWorker(QThread):
                 palette_img.save(tmp_png)
                 palette_out = palette_base + '.dds'
                 try:
-                    convert_to_dds(tmp_png, palette_out, cfg.get(cfg.texconv_file), is_palette=True, palette_width=palette_width, palette_height=palette_height)
+                    convert_to_dds(tmp_png, palette_out, is_palette=True, palette_width=palette_width, palette_height=palette_height)
                 finally:
                     try:
                         os.remove(tmp_png)

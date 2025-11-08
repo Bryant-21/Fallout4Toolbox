@@ -39,10 +39,11 @@ class ResType(Enum):
     ONE_K = 1024
     FIVE_TWELVE = 512
 
+
+
 class Config(QConfig):
 
     #shared
-    texconv_file = ConfigItem("settings", "texconv", "Please Select a texconv.exe location", FileValidator("exe"))
     threads_default = max(1, os.cpu_count() or 1)
     threads_cfg = RangeConfigItem("settings", "threads", threads_default, RangeValidator(1, os.cpu_count()))
 
@@ -107,26 +108,47 @@ class Config(QConfig):
     cfg_target_prepend = ConfigItem("subgraph_maker", "target_prepend", True, BoolValidator())
 
     #NIF
-    data_root_cfg = ConfigItem("uvpad", "data_root", "")
-    textures_dir_cfg = ConfigItem("uvpad", "textures_dir", "")
-    output_dir_cfg = ConfigItem("uvpad", "output_dir", "")
-    mip_flooding = ConfigItem("uvpad", "mip_flooding", False, BoolValidator())
-    color_fill = ConfigItem("uvpad", "color_fill", False, BoolValidator())
+    data_root_cfg = ConfigItem("nif", "data_root", "")
+    last_open_nif = ConfigItem("nif", "last_open_nif", "")
+    do_ai_upscale = ConfigItem("nif", "do_ai_upscale", False, BoolValidator())
+    textures_dir_cfg = ConfigItem("nif", "textures_dir", "")
+    output_dir_cfg = ConfigItem("nif", "output_dir", "")
+    mip_flooding = ConfigItem("nif", "mip_flooding", False, BoolValidator())
+    color_fill = ConfigItem("nif", "color_fill", False, BoolValidator())
+    scale_uvs = ConfigItem("nif", "scale_uvs", False, BoolValidator())
 
     #Convert To Palette
     base_palette_cfg = ConfigItem("convert", "base_palette", "")
     textures = ConfigItem("convert", "textures", "")
     convert_output_dir_cfg = ConfigItem("convert", "output_dir", "")
+    convert_dir_cfg = ConfigItem("convert", "input_dir", "")
+
+
+    mipflood_check = ConfigItem("validation", "mipflood", True, BoolValidator())
+
+    #Upscaler
+    upscale_normals_cfg = ConfigItem("upscaler", "normals", "4x-Normal-RG0-BC7", OptionsValidator([
+        "4x-Normal-RG0-BC1",
+        "4x-Normal-RG0-BC7",
+        "4x-Normal-RG0"
+    ]))
+
+    upscale_textures_cfg = ConfigItem("upscaler", "textures", "4x-PBRify_UpscalerV4", OptionsValidator([
+        "4x-PBRify_UpscalerV4",
+        "4xTextures_GTAV_rgt-s",
+        "4x-PBRify_UpscalerSIR-M_V2"
+    ]))
 
 YEAR = 2025
 AUTHOR = "Bryant21"
-VERSION = '1.0.0'
+VERSION = '1.0.1'
 NEXUS_URL = "https://next.nexusmods.com/profile/Bryant21"
 HELP_URL = "https://github.com/Bryant-21/Fallout4Toolbox"
 FEEDBACK_URL = "https://github.com/Bryant-21/Fallout4Toolbox/issues"
 RELEASE_URL = "https://github.com/Bryant-21/Fallout4Toolbox/releases/latest"
 KOFI_URL = "https://ko-fi.com/bryant21"
 DISCORD_URL = "https://discord.gg/FgKrxdnQdG"
+TEXCONV_EXE = os.path.join(get_app_root(), "resource", "texconv.exe")
 
 cfg = Config()
 qconfig.load(os.path.join(get_app_root(), 'config', 'config.json'), cfg)

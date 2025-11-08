@@ -85,69 +85,34 @@ class SpinSettingCard(StyledSettingCard):
         qconfig.set(self.configItem, value)
 
 
-class RvcComboBoxSettingsCard(SettingCard):
-    """ Setting card with a slider """
-
-    valueChanged = Signal(int)
-
-    def __init__(self, icon: Union[str, QIcon, FluentIconBase], title, content=None, parent=None):
-        super().__init__(icon, title, content, parent)
-        self.configItem = ComboBox(self)
-        self.configItem.setMaxVisibleItems(10)
-        self.configItem.setMinimumWidth(200)
-        self.hBoxLayout.addStretch(1)
-        self.hBoxLayout.addWidget(self.configItem, 0, Qt.AlignmentFlag.AlignRight)
-        self.hBoxLayout.addSpacing(16)
-        self.transcript = None
-        self.configItem.currentIndexChanged.connect(self.__onValueChanged)
-
-    def __onValueChanged(self, value: int):
-        selected_word = self.configItem.itemText(value)
-        self.setValue(selected_word)
-        self.valueChanged.emit(selected_word)
-
-    def setValue(self, value):
-        pass
-
 
 class ComboBoxSettingsCard(SettingCard):
     """ Setting card with a slider """
 
-    valueChanged = Signal(int)
-
-    def __init__(self, icon: Union[str, QIcon, FluentIconBase], title, content=None, parent=None):
+    def __init__(self, icon: Union[str, QIcon, FluentIconBase], title, content=None, parent=None, configItem: ConfigItem= None):
         super().__init__(icon, title, content, parent)
-        self.configItem = ComboBox(self)
-        self.configItem.setMaxVisibleItems(10)
-        self.configItem.setMinimumWidth(200)
+        self.combox = ComboBox(self)
+        self.configItem = configItem
+        if configItem and configItem.validator:
+            for item in configItem.validator.options:
+                self.combox.addItem(item)
+
+        self.combox.setMaxVisibleItems(10)
+        self.combox.setMinimumWidth(200)
+        self.combox.setText(configItem.value if configItem else None)
         self.valueLabel = QLabel(self)
         self.hBoxLayout.addStretch(1)
         self.hBoxLayout.addWidget(self.valueLabel, 0, Qt.AlignmentFlag.AlignRight)
         self.hBoxLayout.addSpacing(6)
-        self.hBoxLayout.addWidget(self.configItem, 0, Qt.AlignmentFlag.AlignRight)
+        self.hBoxLayout.addWidget(self.combox, 0, Qt.AlignmentFlag.AlignRight)
         self.hBoxLayout.addSpacing(16)
         self.transcript = None
         self.valueLabel.setObjectName('valueLabel')
-        self.configItem.currentIndexChanged.connect(self.__onValueChanged)
+        self.combox.currentIndexChanged.connect(self.__onValueChanged)
 
     def __onValueChanged(self, value: int):
-        selected_word = self.configItem.itemText(value)
-        self.setValue(selected_word)
-        self.valueChanged.emit(selected_word)
-
-    def setTranscript(self, transcript):
-        self.transcript = transcript
-
-    def getWordInfo(self):
-        if self.transcript:
-            return self.transcript[self.configItem.currentIndex()]
-        else:
-            return None
-
-    def setValue(self, value):
-        word = self.getWordInfo()
-        self.valueLabel.setText(f" {word['start']} {word['end']}")
-        self.valueLabel.adjustSize()
+        if self.configItem:
+            qconfig.set(self.configItem, self.combox.itemText(value))
 
 
 class ComboBoxWordsCard(SettingCard):

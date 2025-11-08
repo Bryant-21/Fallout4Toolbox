@@ -5,9 +5,9 @@ import traceback
 
 from PySide6 import QtWidgets
 from PySide6.QtCore import Slot
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QCursor
 from PySide6.QtWidgets import QApplication
-from qfluentwidgets import FluentIcon as FIF, StateToolTip, ProgressRing, IndeterminateProgressRing
+from qfluentwidgets import FluentIcon as FIF, StateToolTip, ProgressRing, IndeterminateProgressRing, MessageBox, Dialog
 from qfluentwidgets import Theme, setTheme, NavigationItemPosition
 
 from src.utils.appconfig import VERSION
@@ -26,6 +26,21 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         self.ring.hide()
         self.show_progress()
         self.complete_loader()
+
+        # Add third_party folder to Python module search path
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        third_party_path = os.path.join(base_dir, "third_party")
+        if third_party_path not in sys.path:
+            sys.path.insert(0, third_party_path)
+
+        from src.utils.capabilities import CAPABILITIES
+        from src.utils.appconfig import cfg
+
+        if not CAPABILITIES["mip_flooding"] and cfg.get(cfg.mipflood_check):
+            w = Dialog("MIP Flooding Issue", "MIP Flooding Disabled, Unable to load", self)
+            w.exec()
+            cfg.set(cfg.mipflood_check, False)
+
         # Enable Fluent effects when available
         for attr in ('setMicaEffectEnabled', 'setAcrylicEffectEnabled'):
             try:
@@ -35,12 +50,6 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
             except Exception:
                 pass
 
-        # Add third_party folder to Python module search path
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        third_party_path = os.path.join(base_dir, "third_party")
-        if third_party_path not in sys.path:
-            sys.path.insert(0, third_party_path)
-
         from src.widgets.palette_generator import PaletteGenerator
         from src.widgets.create_archlist import ArchlistWidget
         from src.widgets.esp_template_renamer_tool import ESPTemplaterWidget
@@ -48,13 +57,13 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         from src.widgets.matfiles_copy import MaterialToolUI
         from src.settings.settings_widget import MainSettings
         from src.widgets.subgraph_maker import SubGraphMakerWindow
-        from src.widgets.bulk_palette import BulkPaletteWidget
+        from src.widgets.bulk_palette_generator import BulkPaletteWidget
         from src.widgets.image_quantizer import ImageQuantizerWidget
         from src.widgets.combine_palettes import CombinePaletteGroupsWidget
-        from src.widgets.nif_texture_edit import UVPaddingRemoverWidget
+        from src.widgets.bulk_nif_edit import UVPaddingRemoverWidget
+        from src.widgets.nif_edit import SingleModelUVPadWidget
         from src.widgets.texture_to_greyscale import ConvertToPaletteWidget
         from src.widgets.add_colors_to_palette import AddColorsToPaletteWidget
-        from src.widgets.mip_flooding import MipFloodingWidget
 
         self.addSubInterface(DDSResizerWindow(self, "DDS Bulk Resizer"), CustomIcons.BULK.icon(), "DDS Bulk Resizer",
                              NavigationItemPosition.TOP)
@@ -83,9 +92,20 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         self.navigationInterface.addSeparator()
         self.addSubInterface(ImageQuantizerWidget(self, "Image Quantizer"), CustomIcons.QUANT.icon(), "Image Quantizer",
                              NavigationItemPosition.TOP)
-        self.addSubInterface(MipFloodingWidget(self, "MIP Flooding"), CustomIcons.FLOOD.icon(), "MIP Flooding", NavigationItemPosition.TOP)
-        self.addSubInterface(UVPaddingRemoverWidget(self, "NIF UV Cleaner (WIP)"),
-                             CustomIcons.CUT.icon(), "NIF UV Cleaner (WIP)", NavigationItemPosition.TOP)
+
+        if CAPABILITIES["mip_flooding"]:
+            from src.widgets.mip_flooding import MipFloodingWidget
+            self.addSubInterface(MipFloodingWidget(self, "MIP Flooding"), CustomIcons.FLOOD.icon(), "MIP Flooding", NavigationItemPosition.TOP)
+
+        self.addSubInterface(UVPaddingRemoverWidget(self, "Bulk NIF UV Cleaner (WIP)"),
+                             CustomIcons.CUT_FILM.icon(), "Bulk NIF UV Cleaner (WIP)", NavigationItemPosition.TOP)
+        self.addSubInterface(SingleModelUVPadWidget(self, "Single NIF UV Cleaner"),
+                             CustomIcons.CUT.icon(), "Single NIF UV Cleaner", NavigationItemPosition.TOP)
+
+        if CAPABILITIES["ChaiNNer"]:
+            from src.widgets.upscale import UpscaleWidget, CHAINNER_EXE
+            self.addSubInterface(UpscaleWidget(self, "Upscale"), CustomIcons.ENHANCE.icon(), "Upscale", NavigationItemPosition.TOP)
+
         self.addSubInterface(MainSettings(self), FIF.SETTING, 'Settings', NavigationItemPosition.BOTTOM)
 
 
@@ -105,18 +125,31 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         self.ring.hide()
         self.setEnabled(True)
 
-
     def setupWindow(self):
         self.setWindowTitle(f'Fallout Tools - {VERSION}')
         self.setWindowIcon(self.icon)
-        desktop = QApplication.screens()[0].availableGeometry()
-        # Set size
-        self.setMinimumSize(1280, 900)
-        self.resize(1280, 900)
-        w, h = desktop.width(), desktop.height()
-        self.move(w // 2 - self.width() // 2, h // 2 - self.height() // 2)
 
-        QApplication.processEvents()
+        screen = self.window().screen()
+        desktop = screen.availableGeometry()
+
+        self.setMinimumSize(1280, 900)
+        self.setMaximumSize(desktop.width(), desktop.height())
+
+        screen_w = desktop.width()
+        screen_h = desktop.height()
+
+        target_w = max(int(screen_w * 0.85), self.minimumWidth())
+        target_h = max(int(screen_h * 0.85), self.minimumHeight())
+
+        # Resize
+        self.resize(target_w, target_h)
+
+        # Center
+        self.move(
+            desktop.x() + (desktop.width() - self.width()) // 2,
+            desktop.y() + (desktop.height() - self.height()) // 2,
+        )
+
         self.show()
         QApplication.processEvents()
         self.setMicaEffectEnabled(True)
@@ -127,6 +160,9 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
 
 def main():
     from src.utils.logging_utils import setup_logging
+
+    os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
+    os.environ["QT_SCALE_FACTOR_ROUNDING_POLICY"] = "PassThrough"
 
     logger = None
     try:

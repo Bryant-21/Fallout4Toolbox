@@ -18,12 +18,16 @@ hiddenimports += collect_submodules('skimage')
 hiddenimports += collect_submodules('joblib')
 hiddenimports += collect_submodules('imagequant')
 hiddenimports += collect_submodules('pycparser')
-hiddenimports += collect_submodules('pythonnet6')
+hiddenimports += collect_submodules('pythonnet')
+hiddenimports += collect_submodules('clr')
+hiddenimports += collect_submodules('clr_loader')
 
 datas += collect_data_files('numpy')
 datas += collect_data_files('scipy')
 datas += collect_data_files('sklearn')
 datas += collect_data_files('skimage')
+datas += collect_data_files('pythonnet')
+datas += collect_data_files('clr_loader')
 
 def get_third_party_files():
     third_party_files = []

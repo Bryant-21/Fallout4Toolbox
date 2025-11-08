@@ -12,7 +12,7 @@ from qfluentwidgets import (
     PushSettingCard,
     PrimaryPushButton,
     InfoBar, ConfigItem,
-    FluentIcon as FIF, SwitchSettingCard,
+    FluentIcon as FIF,
 
 )
 
@@ -86,11 +86,11 @@ class ImageQuantizerWidget(BaseWidget):
 
         self.pick_image_card.clicked.connect(self._on_pick_image)
         self.addToFrame(self.pick_image_card)
-
+        self.boxLayout.addStretch(1)
         # Two preview labels inside a grid
         self.original_label = QLabel(self.tr("Original preview"))
         self.original_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.original_label.setMinimumSize(450, 450)
+        self.original_label.setMinimumSize(550, 450)
         self.original_label.setStyleSheet("border: 1px dashed gray;")
 
         self.quantized_label = QLabel(self.tr("Quantized preview"))
@@ -173,7 +173,7 @@ class ImageQuantizerWidget(BaseWidget):
         try:
             self.src_cfg.value = file_path
             self.pick_image_card.setContent(file_path)
-            self.original_pil = load_image(file_path, cfg.get(cfg.texconv_file))
+            self.original_pil = load_image(file_path)
             self._display_on_label(self.original_pil, self.original_label)
             self.quantized_pil = None
             self.quantized_label.setPixmap(QPixmap())

@@ -91,6 +91,8 @@ class CustomIcons(FluentIconBase, Enum):
     FLOOD = "flood"
     INFINITY = "infinity"
     ADD_SOLID = "add-solid"
+    CUT_FILM = "cut-film"
+    ARROW_UP = "arrow-up"
 
     def icon(self, theme=Theme.AUTO, color: QColor = None, stroke: bool = False) -> QIcon:
         """ create a fluent icon

@@ -16,10 +16,10 @@ from qfluentwidgets import (
 
 from src.palette.palette_engine import load_image, next_power_of_2, quantize_image
 from src.settings.palette_settings import PaletteSettings
-from src.utils.helpers import BaseWidget
-from src.utils.logging_utils import logger
 from src.utils.appconfig import cfg
+from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
+from src.utils.logging_utils import logger
 
 
 class AddColorsWorker(QThread):
@@ -48,7 +48,7 @@ class AddColorsWorker(QThread):
             extra_arrays = []
             for i, path in enumerate(self.texture_paths, start=1):
                 try:
-                    pil_img = load_image(path, cfg.get(cfg.texconv_file), format='RGB')
+                    pil_img = load_image(path, format='RGB')
                     ex_quantized, _ = quantize_image(pil_img, cfg.get(cfg.ci_default_quant_method))
                     ex_quant_rgb = ex_quantized.convert('RGB')
                     arr_rgb = np.array(ex_quant_rgb)
@@ -192,6 +192,7 @@ class AddColorsToPaletteWidget(BaseWidget):
         grid.addWidget(self.preview_palette, 1, 1)
         grid_container = QWidget()
         grid_container.setLayout(grid)
+        self.boxLayout.addStretch(1)
         self.addToFrame(grid_container)
 
         # actions
@@ -359,7 +360,7 @@ class AddColorsToPaletteWidget(BaseWidget):
         """Parse the base palette colors from an existing palette texture.
         Strategy: locate the first non-greyscale row and read colors across width.
         """
-        pil = load_image(path, cfg.get(cfg.texconv_file), format='RGB')
+        pil = load_image(path, format='RGB')
         arr = np.array(pil)
         h, w = arr.shape[:2]
         chosen_row = None
@@ -381,7 +382,7 @@ class AddColorsToPaletteWidget(BaseWidget):
 
     def _load_greyscale_indices(self, path: str) -> np.ndarray:
         """Load greyscale image and return 2D array of indices 0..palette_size-1 using the red channel."""
-        pil = load_image(path, cfg.get(cfg.texconv_file), format='RGB')
+        pil = load_image(path, format='RGB')
         arr = np.array(pil)
         # use first channel as index, cap to palette_size
         indices = arr[:, :, 0].astype(np.int32)

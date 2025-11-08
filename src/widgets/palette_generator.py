@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 from collections import Counter, defaultdict
 from datetime import datetime
 
@@ -138,7 +137,7 @@ class SinglePaletteGenerationWorker(QThread):
                 new_h = max(1, int(round(h * scale)))
                 return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-            img = load_image(self.image_path, cfg.get(cfg.texconv_file))
+            img = load_image(self.image_path)
             base_original_img = img
             base_orig_w, base_orig_h = base_original_img.size
             # Apply working resolution downscale to base (no upscale)
@@ -230,7 +229,7 @@ class SinglePaletteGenerationWorker(QThread):
                 self.progress_updated.emit(85, f"Quantizing {len(self.extra_image_paths)} extra image(s)...")
                 for p in self.extra_image_paths:
                     try:
-                        ex_img = load_image(p, cfg.get(cfg.texconv_file))
+                        ex_img = load_image(p)
                         ex_rgb = ex_img
                         ex_orig_w, ex_orig_h = ex_rgb.size
                         # Apply working resolution downscale (no upscale)
@@ -269,7 +268,7 @@ class SinglePaletteGenerationWorker(QThread):
                 self.progress_updated.emit(88, f"Preparing {len(self.greyscale_texture_paths)} greyscale conversion texture(s)...")
                 for p in self.greyscale_texture_paths:
                     try:
-                        gs_img = load_image(p, cfg.get(cfg.texconv_file))
+                        gs_img = load_image(p)
                         gs_rgb = gs_img
                         gs_orig_w, gs_orig_h = gs_rgb.size
                         gs_proc = downscale_keep_aspect(gs_rgb, self.working_resolution) if self.working_resolution else gs_rgb
@@ -698,21 +697,16 @@ class SinglePaletteGenerationWorker(QThread):
             greyscale_path = os.path.join(self.output_dir, f"{base_name}_greyscale{output_extension}")
             if source_is_dds:
                 # For DDS output, use texconv when available; keep temps inside output_dir and always clean them up
-                if cfg.get(cfg.texconv_file) and os.path.exists(cfg.get(cfg.texconv_file)):
-                    temp_greyscale_path = os.path.join(self.output_dir, f"{base_name}_greyscale_temp.png")
+                temp_greyscale_path = os.path.join(self.output_dir, f"{base_name}_greyscale_temp.png")
+                try:
+                    greyscale_rgb.save(temp_greyscale_path)
+                    convert_to_dds(temp_greyscale_path, greyscale_path)
+                finally:
                     try:
-                        greyscale_rgb.save(temp_greyscale_path)
-                        convert_to_dds(temp_greyscale_path, greyscale_path, cfg.get(cfg.texconv_file))
-                    finally:
-                        try:
-                            if os.path.exists(temp_greyscale_path):
-                                os.remove(temp_greyscale_path)
-                        except Exception as _cleanup_ex:
-                            logger.warning(f"Failed to remove temp file {temp_greyscale_path}: {_cleanup_ex}")
-                else:
-                    logger.warning("texconv.exe not found, saving as PNG instead of DDS")
-                    greyscale_path = os.path.join(self.output_dir, f"{base_name}_greyscale.png")
-                    greyscale_rgb.save(greyscale_path)
+                        if os.path.exists(temp_greyscale_path):
+                            os.remove(temp_greyscale_path)
+                    except Exception as _cleanup_ex:
+                        logger.warning(f"Failed to remove temp file {temp_greyscale_path}: {_cleanup_ex}")
             else:
                 greyscale_rgb.save(greyscale_path)
             output_files['greyscale'] = greyscale_path
@@ -721,24 +715,20 @@ class SinglePaletteGenerationWorker(QThread):
             palette_path = os.path.join(self.output_dir, f"{base_name}_palette{output_extension}")
             if source_is_dds:
                 # For DDS output, use texconv when available; keep temps inside output_dir and always clean them up
-                if cfg.get(cfg.texconv_file) and os.path.exists(cfg.get(cfg.texconv_file)):
-                    temp_palette_path = os.path.join(self.output_dir, f"{base_name}_palette_temp.png")
+                temp_palette_path = os.path.join(self.output_dir, f"{base_name}_palette_temp.png")
+                try:
+                    palette_image.save(temp_palette_path)
+                    convert_to_dds(temp_palette_path, palette_path, is_palette=True,
+                                        palette_width=palette_width, palette_height=palette_height)
+                finally:
                     try:
-                        palette_image.save(temp_palette_path)
-                        convert_to_dds(temp_palette_path, palette_path, cfg.get(cfg.texconv_file), is_palette=True,
-                                            palette_width=palette_width, palette_height=palette_height)
-                    finally:
-                        try:
-                            if os.path.exists(temp_palette_path):
-                                os.remove(temp_palette_path)
-                        except Exception as _cleanup_ex:
-                            logger.warning(f"Failed to remove temp file {temp_palette_path}: {_cleanup_ex}")
-                else:
-                    logger.warning("texconv.exe not found, saving as PNG instead of DDS")
-                    palette_path = os.path.join(self.output_dir, f"{base_name}_palette.png")
-                    palette_image.save(palette_path)
+                        if os.path.exists(temp_palette_path):
+                            os.remove(temp_palette_path)
+                    except Exception as _cleanup_ex:
+                        logger.warning(f"Failed to remove temp file {temp_palette_path}: {_cleanup_ex}")
             else:
                 palette_image.save(palette_path)
+
             output_files['palette'] = palette_path
             logger.debug(f"Saved Palette: {palette_path}")
 
@@ -763,15 +753,8 @@ class SinglePaletteGenerationWorker(QThread):
                         try:
                             color_img.save(temp_color_path)
                             grey_img.save(temp_grey_path)
-                            if cfg.get(cfg.texconv_file) and os.path.exists(cfg.get(cfg.texconv_file)):
-                                convert_to_dds(temp_color_path, color_out, cfg.get(cfg.texconv_file))
-                                convert_to_dds(temp_grey_path, grey_out, cfg.get(cfg.texconv_file))
-                            else:
-                                logger.warning("texconv.exe not found, saving as PNG instead of DDS")
-                                color_out = os.path.join(self.output_dir, f"{base_name}_texture{idx}.png")
-                                grey_out = os.path.join(self.output_dir, f"{base_name}_greyscaletexture_{idx}.png")
-                                color_img.save(color_out)
-                                grey_img.save(grey_out)
+                            convert_to_dds(temp_color_path, color_out)
+                            convert_to_dds(temp_grey_path, grey_out)
                         finally:
                             for _p in (temp_color_path, temp_grey_path):
                                 try:
@@ -803,16 +786,15 @@ class SinglePaletteGenerationWorker(QThread):
             # Generate DDS if source was DDS (mirror simplified names) - initialize dds_files
             dds_files = {}
             source_is_dds = self.image_path.lower().endswith('.dds')
-            texconv_path = cfg.get(cfg.texconv_file)
 
-            if source_is_dds and texconv_path and os.path.exists(texconv_path):
+            if source_is_dds:
                 try:
                     # Convert greyscale to DDS
                     temp_greyscale_path = os.path.join(self.output_dir, f"{base_name}_greyscale_temp.png")
                     try:
                         greyscale_rgb.save(temp_greyscale_path)
                         greyscale_dds_path = os.path.join(self.output_dir, f"{base_name}_greyscale.dds")
-                        convert_to_dds(temp_greyscale_path, greyscale_dds_path, texconv_path)
+                        convert_to_dds(temp_greyscale_path, greyscale_dds_path)
                         dds_files['greyscale'] = greyscale_dds_path
                     finally:
                         try:
@@ -826,7 +808,7 @@ class SinglePaletteGenerationWorker(QThread):
                     try:
                         palette_image.save(temp_palette_path)
                         palette_dds_path = os.path.join(self.output_dir, f"{base_name}_palette.dds")
-                        convert_to_dds(temp_palette_path, palette_dds_path, texconv_path, is_palette=True, palette_width=palette_width,
+                        convert_to_dds(temp_palette_path, palette_dds_path, is_palette=True, palette_width=palette_width,
                                             palette_height=palette_height)
                         dds_files['palette'] = palette_dds_path
                     finally:
@@ -849,8 +831,8 @@ class SinglePaletteGenerationWorker(QThread):
 
                             c_dds = os.path.join(self.output_dir, f"{base_name}_texture{idx}.dds")
                             g_dds = os.path.join(self.output_dir, f"{base_name}_greyscaletexture_{idx}.dds")
-                            convert_to_dds(temp_c_path, c_dds, texconv_path)
-                            convert_to_dds(temp_g_path, g_dds, texconv_path)
+                            convert_to_dds(temp_c_path, c_dds)
+                            convert_to_dds(temp_g_path, g_dds)
                             dds_files.setdefault('textures_dds', []).append(c_dds)
                             dds_files.setdefault('greyscale_textures_dds', []).append(g_dds)
                         except Exception as ex:
@@ -1359,7 +1341,7 @@ class PaletteGenerator(BaseWidget):
     def load_and_display_image(self, file_path, label, description):
         try:
             logger.debug(f"Loading image for display: {file_path}")
-            img = load_image(file_path, cfg.get(cfg.texconv_file))
+            img = load_image(file_path)
             pixmap = self.pil_to_pixmap(img)
 
             scaled_pixmap = pixmap.scaled(
@@ -1419,10 +1401,9 @@ class PaletteGenerator(BaseWidget):
 
         # Check if source is DDS and if texconv is available
         source_is_dds = self.current_image_path.lower().endswith('.dds')
-        texconv_path = str(cfg.get(cfg.texconv_file) or "")
         generate_dds = source_is_dds  # Only generate DDS if source is DDS
 
-        if step in ['all', 'palette'] and generate_dds and (not texconv_path or not os.path.exists(texconv_path)):
+        if step in ['all', 'palette'] and generate_dds:
             reply = QMessageBox.question(
                 self,
                 "texconv.exe not found",
@@ -1685,9 +1666,6 @@ Note: Palette texture is {palette_width}×{palette_height} pixels (power of two 
             source_is_dds = self.current_image_path.lower().endswith('.dds')
             output_extension = ".dds" if source_is_dds else ".png"
 
-            # Resolve texconv path from ConfigItem for this save operation
-            texconv_path = str(cfg.get(cfg.texconv_file) or "")
-
             # Save quantized image in appropriate format
             quantized_path = os.path.join(self.output_dir,
                                           f"{base_name}_{method}_{palette_size}quantized{output_extension}")
@@ -1697,13 +1675,7 @@ Note: Palette texture is {palette_width}×{palette_height} pixels (power of two 
                                                    f"{base_name}_{method}_{palette_size}quantized_temp.png")
                 try:
                     self.quantized_data['quantized_image'].save(temp_quantized_path)
-                    if texconv_path and os.path.exists(texconv_path):
-                        self.convert_to_dds(temp_quantized_path, quantized_path, texconv_path)
-                    else:
-                        logger.warning("texconv.exe not found, saving as PNG instead of DDS")
-                        quantized_path = os.path.join(self.output_dir,
-                                                      f"{base_name}_{method}_{palette_size}quantized.png")
-                        self.quantized_data['quantized_image'].save(quantized_path)
+                    convert_to_dds(temp_quantized_path, quantized_path)
                 finally:
                     try:
                         if os.path.exists(temp_quantized_path):
@@ -1722,13 +1694,7 @@ Note: Palette texture is {palette_width}×{palette_height} pixels (power of two 
                                                    f"{base_name}_{method}_{palette_size}greyscale_temp.png")
                 try:
                     self.greyscale_data['greyscale_image'].save(temp_greyscale_path)
-                    if texconv_path and os.path.exists(texconv_path):
-                        self.convert_to_dds(temp_greyscale_path, greyscale_path, texconv_path)
-                    else:
-                        logger.warning("texconv.exe not found, saving as PNG instead of DDS")
-                        greyscale_path = os.path.join(self.output_dir,
-                                                      f"{base_name}_{method}_{palette_size}greyscale.png")
-                        self.greyscale_data['greyscale_image'].save(greyscale_path)
+                    convert_to_dds(temp_greyscale_path, greyscale_path)
                 finally:
                     try:
                         if os.path.exists(temp_greyscale_path):
@@ -1746,14 +1712,10 @@ Note: Palette texture is {palette_width}×{palette_height} pixels (power of two 
                                              f"{base_name}_{method}_{palette_size}Palette_temp.png")
                 try:
                     self.palette_data['palette_image'].save(temp_palette_path)
-                    if texconv_path and os.path.exists(texconv_path):
-                        palette_width, palette_height = self.palette_data.get('palette_dimensions', (palette_size, 8))
-                        self.convert_to_dds(temp_palette_path, palette_path, texconv_path, is_palette=True, palette_width=palette_width,
-                                            palette_height=palette_height)
-                    else:
-                        logger.warning("texconv.exe not found, saving as PNG instead of DDS")
-                        palette_path = os.path.join(self.output_dir, f"{base_name}_{method}_{palette_size}Palette.png")
-                        self.palette_data['palette_image'].save(palette_path)
+                    palette_width, palette_height = self.palette_data.get('palette_dimensions', (palette_size, 8))
+                    convert_to_dds(temp_palette_path, palette_path, is_palette=True, palette_width=palette_width,
+                                        palette_height=palette_height)
+
                 finally:
                     try:
                         if os.path.exists(temp_palette_path):
@@ -1766,28 +1728,27 @@ Note: Palette texture is {palette_width}×{palette_height} pixels (power of two 
             # Generate DDS if source was DDS
             dds_files = {}
             source_is_dds_check = self.current_image_path.lower().endswith('.dds')
-            texconv_path = str(cfg.get(cfg.texconv_file) or "")
 
-            if source_is_dds_check and texconv_path and os.path.exists(texconv_path):
+            if source_is_dds_check:
                 try:
                     palette_width, palette_height = self.palette_data.get('palette_dimensions', (palette_size, 8))
 
                     # Convert quantized to DDS
                     quantized_dds_path = os.path.join(self.output_dir,
                                                       f"{base_name}_{method}_{palette_size}quantized.dds")
-                    self.convert_to_dds(quantized_path, quantized_dds_path, texconv_path)
+                    convert_to_dds(quantized_path, quantized_dds_path)
                     dds_files['quantized'] = quantized_dds_path
 
                     # Convert greyscale to DDS
                     greyscale_dds_path = os.path.join(self.output_dir,
                                                       f"{base_name}_{method}_{palette_size}greyscale.dds")
-                    self.convert_to_dds(greyscale_path, greyscale_dds_path, texconv_path)
+                    convert_to_dds(greyscale_path, greyscale_dds_path)
                     dds_files['greyscale'] = greyscale_dds_path
 
                     # Convert Palette to DDS
                     palette_dds_path = os.path.join(self.output_dir,
                                                 f"{base_name}_{method}_{palette_size}Palette.dds")
-                    self.convert_to_dds(palette_path, palette_dds_path, texconv_path, is_palette=True, palette_width=palette_width,
+                    convert_to_dds(palette_path, palette_dds_path, is_palette=True, palette_width=palette_width,
                                         palette_height=palette_height)
                     dds_files['palette'] = palette_dds_path
 
@@ -1803,28 +1764,27 @@ Note: Palette texture is {palette_width}×{palette_height} pixels (power of two 
             # Generate DDS if source was DDS
             dds_files = {}
             source_is_dds = self.current_image_path.lower().endswith('.dds')
-            texconv_path = cfg.get(cfg.texconv_file) or ""
 
-            if source_is_dds and texconv_path and os.path.exists(texconv_path):
+            if source_is_dds:
                 try:
                     palette_width, palette_height = self.palette_data.get('palette_dimensions', (palette_size, 8))
 
                     # Convert quantized to DDS
                     quantized_dds_path = os.path.join(self.output_dir,
                                                       f"{base_name}_{method}_{palette_size}quantized.dds")
-                    self.convert_to_dds(quantized_path, quantized_dds_path, texconv_path)
+                    convert_to_dds(quantized_path, quantized_dds_path)
                     dds_files['quantized'] = quantized_dds_path
 
                     # Convert greyscale to DDS
                     greyscale_dds_path = os.path.join(self.output_dir,
                                                       f"{base_name}_{method}_{palette_size}greyscale.dds")
-                    self.convert_to_dds(greyscale_path, greyscale_dds_path, texconv_path)
+                    convert_to_dds(greyscale_path, greyscale_dds_path)
                     dds_files['greyscale'] = greyscale_dds_path
 
                     # Convert Palette to DDS
                     palette_dds_path = os.path.join(self.output_dir,
                                                 f"{base_name}_{method}_{palette_size}Palette.dds")
-                    self.convert_to_dds(palette_path, palette_dds_path, texconv_path, is_palette=True, palette_width=palette_width,
+                    convert_to_dds(palette_path, palette_dds_path, is_palette=True, palette_width=palette_width,
                                         palette_height=palette_height)
                     dds_files['palette'] = palette_dds_path
 
@@ -1906,38 +1866,3 @@ Note: Palette texture is {palette_width}×{palette_height} pixels (power of two 
         except Exception as e:
             logger.error(f"Error saving color report: {str(e)}")
             raise
-
-    def convert_to_dds(self, input_path, output_path, texconv_path, is_palette=False, palette_width=256, palette_height=8):
-        """Convert image to DDS format using texconv.exe"""
-        try:
-            if is_palette:
-                cmd = [
-                    texconv_path,
-                    '-f', 'BC7_UNORM',
-                    '-y',
-                    '-m', '1',
-                    '-w', str(palette_width),
-                    '-h', str(palette_height),
-                    '-srgb',
-                    input_path,
-                    '-o', os.path.dirname(output_path)
-                ]
-            else:
-                cmd = [
-                    texconv_path,
-                    '-f', 'BC7_UNORM',
-                    '-y',
-                    '-m', '1',
-                    '-srgb',
-                    input_path,
-                    '-o', os.path.dirname(output_path)
-                ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                raise Exception(f"texconv failed: {result.stderr}")
-
-        except subprocess.TimeoutExpired:
-            raise Exception("texconv timed out")
-        except Exception as e:
-            raise Exception(f"DDS conversion error: {str(e)}")

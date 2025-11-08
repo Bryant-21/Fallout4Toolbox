@@ -26,7 +26,7 @@ from src.palette.palette_engine import (
     rgb_to_lab_array,
     hue_angle_from_ab,
 )
-from src.utils.appconfig import cfg
+from src.utils.appconfig import cfg, TEXCONV_EXE
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
@@ -58,15 +58,6 @@ class BulkPaletteWorker(QThread):
             if not image_paths:
                 raise Exception("No images found matching the include filter in the selected directory.")
 
-            # Collect original extensions present to decide output formats (match input types per file)
-            original_exts = [os.path.splitext(p)[1].lower() for p in image_paths]
-            originals_have_dds = any(ext == '.dds' for ext in original_exts)
-            # If any DDS will be written, ensure texconv is available
-            if originals_have_dds:
-                texconv_path = cfg.get(cfg.texconv_file)
-                if not texconv_path or not os.path.isfile(texconv_path):
-                    raise Exception("texconv.exe path is not set. Please configure it in Settings before writing DDS outputs.")
-
             self.progress.emit(5, f"Found {len(image_paths)} images. Loading and quantizing...")
 
             # Step 1: Quantize each image and collect color frequencies
@@ -76,13 +67,13 @@ class BulkPaletteWorker(QThread):
             sample_img_for_padding = None
 
             for idx, path in enumerate(image_paths):
-                img = load_image(path, cfg.get(cfg.texconv_file))
+                img = load_image(path)
                 if self.working_resolution and self.working_resolution > 0:
                     img = self._downscale_keep_aspect(img, self.working_resolution)
                 if sample_img_for_padding is None:
                     sample_img_for_padding = img
 
-                quantized_img, qinfo = quantize_image(img, cfg.get(cfg.ci_default_quant_method))
+                quantized_img, qinfo = quantize_image(img, cfg.get(cfg.ci_default_quant_method), True)
                 q_rgb = quantized_img.convert('RGB')
                 q_arr = np.array(q_rgb)
                 h, w = q_arr.shape[:2]
@@ -186,7 +177,7 @@ class BulkPaletteWorker(QThread):
                     Image.fromarray(grey_indices, mode='L').save(tmp_grey_png)
                     grey_out = os.path.join(self.output_dir, grey_base + '.dds')
                     try:
-                        convert_to_dds(tmp_grey_png, grey_out, cfg.get(cfg.texconv_file), is_palette=False)
+                        convert_to_dds(tmp_grey_png, grey_out, is_palette=False)
                     finally:
                         try:
                             os.remove(tmp_grey_png)
@@ -198,7 +189,7 @@ class BulkPaletteWorker(QThread):
                     Image.fromarray(color_arr.astype(np.uint8), mode='RGB').save(tmp_color_png)
                     color_out = os.path.join(self.output_dir, color_base + '.dds')
                     try:
-                        convert_to_dds(tmp_color_png, color_out, cfg.get(cfg.texconv_file), is_palette=False)
+                        convert_to_dds(tmp_color_png, color_out, is_palette=False)
                     finally:
                         try:
                             os.remove(tmp_color_png)
@@ -252,7 +243,7 @@ class BulkPaletteWorker(QThread):
                 palette_img.save(tmp_png)
                 palette_out = palette_base + '.dds'
                 try:
-                    convert_to_dds(tmp_png, palette_out, cfg.get(cfg.texconv_file), is_palette=True, palette_width=palette_width, palette_height=palette_height)
+                    convert_to_dds(tmp_png, palette_out, is_palette=True, palette_width=palette_width, palette_height=palette_height)
                 finally:
                     try:
                         os.remove(tmp_png)

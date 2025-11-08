@@ -17,7 +17,6 @@ from qfluentwidgets import (
 )
 
 from help.convertpalette_help import PaletteConvertHelp
-from settings.generic_settings import GenericSettings
 from settings.palette_settings import PaletteSettings
 from src.palette.palette_engine import load_image, convert_to_dds
 from src.utils.helpers import BaseWidget
@@ -44,7 +43,7 @@ class ConvertToPaletteWorker(QThread):
                 self.finished.emit({'processed': 0, 'skipped': 0, 'failed': 0})
                 return
             # Load palette image once
-            palette_image = load_image(self.palette_path, cfg.get(cfg.texconv_file), format='RGB')
+            palette_image = load_image(self.palette_path, format='RGB')
             palette_p_image = palette_image.convert('P', palette=Image.Palette.ADAPTIVE)
             processed = skipped = failed = 0
             first_bw = None
@@ -53,7 +52,7 @@ class ConvertToPaletteWorker(QThread):
             for i, tex_path in enumerate(self.texture_paths, start=1):
                 try:
                     # Load texture
-                    img = load_image(tex_path, cfg.get(cfg.texconv_file), format='RGB')
+                    img = load_image(tex_path, format='RGB')
                     # Quantize using palette
                     q_img = img.quantize(palette=palette_p_image, dither=Image.Dither.NONE)
                     q_rgb = q_img.convert('RGB')
@@ -69,7 +68,6 @@ class ConvertToPaletteWorker(QThread):
                     src_ext = src_ext.lower()
                     os.makedirs(base_dir, exist_ok=True)
                     if src_ext == '.dds':
-                        texconv_path = str(cfg.get(cfg.texconv_file) or '')
                         tmp_quant = os.path.join(base_dir, f"{base_name}_quant_temp.png")
                         tmp_bw = os.path.join(base_dir, f"{base_name}_bw_temp.png")
                         out_quant_dds = os.path.join(base_dir, f"{base_name}_quant.dds")
@@ -77,13 +75,8 @@ class ConvertToPaletteWorker(QThread):
                         try:
                             q_rgb.save(tmp_quant, format='PNG')
                             gs_img.save(tmp_bw, format='PNG')
-                            if texconv_path and os.path.exists(texconv_path):
-                                convert_to_dds(tmp_quant, out_quant_dds, texconv_path)
-                                convert_to_dds(tmp_bw, out_bw_dds, texconv_path)
-                            else:
-                                # Fallback to PNG outputs
-                                q_rgb.save(os.path.join(base_dir, f"{base_name}_quant.png"), format='PNG')
-                                gs_img.save(os.path.join(base_dir, f"{base_name}_bw.png"), format='PNG')
+                            convert_to_dds(tmp_quant, out_quant_dds)
+                            convert_to_dds(tmp_bw, out_bw_dds)
                         finally:
                             for p in (tmp_quant, tmp_bw):
                                 try:
@@ -207,7 +200,7 @@ class ConvertToPaletteWidget(BaseWidget):
             return
         try:
             # use loader to support DDS and other formats
-            self.palette_image = load_image(path, cfg.get(cfg.texconv_file), format='RGB')
+            self.palette_image = load_image(path, format='RGB')
             cfg.set(cfg.base_palette_cfg, path)
             self.palette_card.setContent(path)
             self.palette_path = path
@@ -320,7 +313,7 @@ class ConvertToPaletteWidget(BaseWidget):
     # -------------- Core processing ---------------
     def _process_single(self, tex_path: str):
         # Load texture
-        img = load_image(tex_path, cfg.get(cfg.texconv_file), format='RGB')
+        img = load_image(tex_path, format='RGB')
         # Quantize using the provided palette image per PIL docs
         pal_src = self._ensure_palette_image()
         q_img = img.quantize(palette=pal_src, dither=Image.Dither.NONE)
@@ -337,7 +330,6 @@ class ConvertToPaletteWidget(BaseWidget):
 
         source_is_dds = src_ext == '.dds'
         if source_is_dds:
-            texconv_path = str(cfg.get(cfg.texconv_file) or '')
             # write temp PNGs then convert
             tmp_quant = os.path.join(base_dir, f"{base_name}_quant_temp.png")
             tmp_bw = os.path.join(base_dir, f"{base_name}_bw_temp.png")
@@ -346,16 +338,8 @@ class ConvertToPaletteWidget(BaseWidget):
             try:
                 q_rgb.save(tmp_quant, format='PNG')
                 gs_img.save(tmp_bw, format='PNG')
-                if texconv_path and os.path.exists(texconv_path):
-                    convert_to_dds(tmp_quant, out_quant_dds, texconv_path)
-                    convert_to_dds(tmp_bw, out_bw_dds, texconv_path)
-                else:
-                    logger.warning("texconv.exe not found; saving PNGs instead of DDS")
-                    # fall back to PNG outputs
-                    out_quant_png = os.path.join(base_dir, f"{base_name}_quant.png")
-                    out_bw_png = os.path.join(base_dir, f"{base_name}_bw.png")
-                    q_rgb.save(out_quant_png, format='PNG')
-                    gs_img.save(out_bw_png, format='PNG')
+                convert_to_dds(tmp_quant, out_quant_dds)
+                convert_to_dds(tmp_bw, out_bw_dds)
             finally:
                 # cleanup temp files
                 for p in (tmp_quant, tmp_bw):
@@ -405,7 +389,7 @@ class ConvertToPaletteWidget(BaseWidget):
         img = pil_image.copy()
         img.thumbnail((max_w, max_h))
         data = img.convert('RGBA').tobytes('raw', 'RGBA')
-        qimg = QImage(data, img.width, img.height, QImage.Format_RGBA8888)
+        qimg = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
         pix = QPixmap.fromImage(qimg)
         label.setPixmap(pix)
         if description:

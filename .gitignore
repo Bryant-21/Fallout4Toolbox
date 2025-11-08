@@ -220,3 +220,4 @@ release/
 *.zip
 
 resource/config.json
+/ChaiNNer/

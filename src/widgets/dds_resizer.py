@@ -19,7 +19,7 @@ from qfluentwidgets import (
 
 from src.help.dds_help import DDSHelp
 from src.settings.dds_settings import DDSSettings
-from src.utils.appconfig import cfg
+from src.utils.appconfig import cfg, TEXCONV_EXE
 from src.utils.cards import TextSettingCard
 from src.utils.helpers import BaseWidget
 from src.utils.logging_utils import logger
@@ -85,13 +85,12 @@ class Worker(QtCore.QThread):
     finished = QtCore.Signal(str)
     error = QtCore.Signal(str)
 
-    def __init__(self, src_dir: str, texconv_path: str, sizes: List[int], out_root: str,
+    def __init__(self, src_dir: str, sizes: List[int], out_root: str,
                  per_size_subfolders: bool = True, no_upscale: bool = True,
                  generate_mips: bool = True, threads: int | None = None, ignore_patterns: Optional[List[str]] = None,
                  convert_to_srgb: bool = False, parent=None):
         super().__init__(parent)
         self.src_dir = src_dir
-        self.texconv_path = texconv_path
         self.sizes = sorted(set([int(s) for s in sizes if s > 0]))
         self.out_root = out_root
         self.per_size_subfolders = per_size_subfolders
@@ -132,12 +131,8 @@ class Worker(QtCore.QThread):
 
     def run(self):
         try:
-            if not os.path.isfile(self.texconv_path):
-                self.error.emit('texconv.exe not found. Please select a valid path.')
-                return
             # Gather DDS files with ignore patterns and prune output roots if inside src
             dds_files: List[str] = []
-
             # Compute skip roots if out_root resides under src_dir
             try:
                 src_abs = os.path.abspath(self.src_dir)
@@ -222,11 +217,10 @@ class Worker(QtCore.QThread):
                         shutil.copy2(src_path, out_path)
                         return f'Copied (no upscale): {rel_path} -> {os.path.relpath(out_path, self.out_root)}'
                     except Exception as e:
-                        # fall back to texconv
                         pass
 
                 cmd = [
-                    self.texconv_path,
+                    TEXCONV_EXE,
                     '-nologo',
                     '-y',
                     '-o', out_dir,
@@ -448,7 +442,6 @@ class DDSResizerWindow(BaseWidget):
         no_upscale = bool(cfg.no_upscale_cfg.value)
         gen_mips = bool(cfg.mips_cfg.value)
         to_bc3 = bool(cfg.bc3_cfg.value)
-        texconv = cfg.get(cfg.texconv_file)
         threads = cfg.get(cfg.threads_cfg)
         sizes = self._parse_sizes(sizes_csv)
 
@@ -463,9 +456,6 @@ class DDSResizerWindow(BaseWidget):
             return
         if not per_size and len(sizes) > 1:
             QtWidgets.QMessageBox.warning(self, "Validation", "When not creating per-size subfolders, provide only one size to avoid overwriting outputs.")
-            return
-        if not texconv or not os.path.isfile(texconv):
-            QtWidgets.QMessageBox.warning(self, "Validation", "texconv.exe not found. Please set it in the Settings tab.")
             return
 
         # Ensure output exists
@@ -499,13 +489,11 @@ class DDSResizerWindow(BaseWidget):
             'gen_mips': gen_mips,
             'to_bc3': to_bc3,
             'threads': threads,
-            'texconv': texconv,
             'ignore_patterns': ignore_patterns,
         }
 
         self.worker = Worker(
             src_dir=src,
-            texconv_path=texconv,
             sizes=sizes,
             out_root=out,
             per_size_subfolders=per_size,
