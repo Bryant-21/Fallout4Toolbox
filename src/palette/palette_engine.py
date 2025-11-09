@@ -7,7 +7,8 @@ import numpy as np
 from PIL import Image
 from PIL.Image import Quantize, Palette
 from skimage.color import rgb2lab, deltaE_ciede2000
-
+from numba import njit
+import numpy as np
 from src.utils.appconfig import cfg, TEXCONV_EXE
 from src.utils.logging_utils import logger
 
@@ -838,7 +839,7 @@ def perceptual_color_sort(colors):
     if(cfg.get(cfg.ci_use_faster_sort)):
         return faster_perceptual_color_sort(colors)
     else:
-        return old_perceptual_color_sort(colors)
+        return perceptual_color_sort_updated(colors)
 
 
 def old_perceptual_color_sort(colors):
@@ -919,6 +920,112 @@ def old_perceptual_color_sort(colors):
 
     return sorted_colors
 
+@njit(fastmath=True, cache=True)
+def delta_e_matrix_numba(lab):
+    n = lab.shape[0]
+    D = np.empty((n, n), dtype=np.float32)
+    for i in range(n):
+        for j in range(n):
+            dl = lab[i, 0] - lab[j, 0]
+            da = lab[i, 1] - lab[j, 1]
+            db = lab[i, 2] - lab[j, 2]
+            D[i, j] = (dl*dl + da*da + db*db)**0.5
+    return D
+
+def perceptual_color_sort_updated(colors):
+    n = len(colors)
+    if n <= 1:
+        return list(colors)
+
+    lab = rgb_to_lab_array(colors)
+    L, a, b = lab[:, 0], lab[:, 1], lab[:, 2]
+
+    hues = np.array([hue_angle_from_ab(ai, bi) for ai, bi in zip(a, b)])
+    chromas = np.sqrt(a**2 + b**2)
+
+    hues_unwrapped, _ = unwrap_hue(hues)
+    hue_range = hues_unwrapped.max() - hues_unwrapped.min()
+    is_hue_dominant = hue_range > 90
+
+    if is_hue_dominant:
+        initial_order = np.lexsort((L, hues_unwrapped))
+    else:
+        initial_order = np.lexsort((chromas, L))
+
+    sorted_colors = [colors[i] for i in initial_order]
+    lab_current = lab[initial_order]
+
+    # --- Precompute distance matrix (n x n) ---
+    dist_matrix = delta_e_matrix_numba(lab_current)
+
+    # --- 2-opt with O(1) cost diff calculation ---
+    order = np.arange(n)
+    current_cost = np.sum(dist_matrix[order[:-1], order[1:]])
+
+    improved = True
+    iterations = 0
+    max_polish_iter = min(cfg.get(cfg.ci_palette_color_iteration), n * 5)
+
+    while improved and iterations < max_polish_iter:
+        improved = False
+        for i in range(1, n - 2):
+            for j in range(i + 2, n - 1):
+
+                # Cost difference of swapping (i-1,i) and (j,j+1)
+                before = dist_matrix[order[i-1], order[i]] + dist_matrix[order[j], order[j+1]]
+                after  = dist_matrix[order[i-1], order[j]] + dist_matrix[order[i], order[j+1]]
+
+                if after < before:  # real improvement detected
+                    order[i:j+1] = order[i:j+1][::-1]  # reverse segment
+                    current_cost += (after - before)
+                    improved = True
+                    break
+            if improved:
+                break
+        iterations += 1
+
+    # Apply result order
+    sorted_colors = [sorted_colors[i] for i in order]
+    lab_current = lab_current[order]
+
+    total_de = np.sum(dist_matrix[order[:-1], order[1:]])
+    max_de = np.max(dist_matrix[order[:-1], order[1:]])
+
+    logger.debug(f"Linear gradient sort complete (fast 2-opt, same quality): {n} colors")
+    logger.debug(f"Total ΔE: {total_de:.3f}, Avg ΔE: {total_de/(n-1):.3f}, Max ΔE: {max_de:.3f}")
+
+    return sorted_colors
+
+
+@njit(fastmath=True, cache=True)
+def two_opt_with_delta(order, D, max_iter):
+    m = len(order)
+    if m < 4 or max_iter <= 0:
+        return order
+    for _ in range(max_iter):
+        improved = False
+        for i in range(1, m-2):
+            a = order[i-1]
+            b = order[i]
+            for j in range(i+1, m-1):
+                c = order[j]
+                d = order[j+1]
+                delta = -D[a,b] - D[c,d] + D[a,c] + D[b,d]
+                if delta < -1e-6:
+                    # reverse section i:j+1 (Numba-safe manual reverse)
+                    left = i
+                    right = j
+                    while left < right:
+                        order[left], order[right] = order[right], order[left]
+                        left += 1
+                        right -= 1
+                    improved = True
+                    break
+            if improved:
+                break
+        if not improved:
+            break
+    return order
 
 def faster_perceptual_color_sort(colors):
     """
@@ -953,9 +1060,7 @@ def faster_perceptual_color_sort(colors):
         cand2 = np.lexsort((chromas, -L))                 # L desc within narrow hue
 
     # Precompute Euclidean (CIE76) pairwise distances once on the fixed lab array
-    # We’ll score both candidates quickly.
-    diffs = lab[:, None, :] - lab[None, :, :]
-    D = np.linalg.norm(diffs, axis=2).astype(np.float32)  # (n, n)
+    D = delta_e_matrix_numba(lab)
 
     def path_cost_from_order(idx):
         if len(idx) <= 1:
@@ -971,36 +1076,10 @@ def faster_perceptual_color_sort(colors):
     lab_current = lab[initial_order].copy()
 
     # Rebuild D relative to lab_current to simplify indices 0..n-1 for the 2-opt step
-    diffs_curr = lab_current[:, None, :] - lab_current[None, :, :]
-    D_curr = np.linalg.norm(diffs_curr, axis=2).astype(np.float32)
+    D_curr = delta_e_matrix_numba(lab_current)
 
     # 2-opt with O(1) delta evaluation, first-improvement, absolute-epsilon acceptance
     order = list(range(n))
-
-    def two_opt_with_delta(ord_list, Dm, max_iter):
-        m = len(ord_list)
-        if m < 4 or max_iter <= 0:
-            return ord_list
-        it = 0
-        improved_any = True
-        while improved_any and it < max_iter:
-            improved_any = False
-            it += 1
-            # Scan i,j; for open path, i in [1..m-3], j in [i+1..m-2] so edges (i-1,i) and (j,j+1) exist
-            for i in range(1, m - 2):
-                a = ord_list[i - 1]
-                b_i = ord_list[i]
-                for j in range(i + 1, m - 1):
-                    c = ord_list[j]
-                    d = ord_list[j + 1]
-                    delta = -Dm[a, b_i] - Dm[c, d] + Dm[a, c] + Dm[b_i, d]
-                    if delta < -1e-6:  # accept any real improvement (absolute epsilon)
-                        ord_list[i:j + 1] = reversed(ord_list[i:j + 1])
-                        improved_any = True
-                        break  # first-improvement: restart outer scan
-                if improved_any:
-                    break
-        return ord_list
 
     # Decide polishing budget (keep your config, but it’s much cheaper now)
     try:
@@ -1009,7 +1088,9 @@ def faster_perceptual_color_sort(colors):
         max_polish_iter = min(16, max(1, n // 4))
 
     if max_polish_iter > 0:
+        order = np.array(list(range(n)), dtype=np.int32)
         order = two_opt_with_delta(order, D_curr, max_polish_iter)
+        order = order.tolist()
         # Apply final order
         if order != list(range(n)):
             sorted_colors = [sorted_colors[i] for i in order]

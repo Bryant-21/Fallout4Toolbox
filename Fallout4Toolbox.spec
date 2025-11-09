@@ -20,6 +20,7 @@ hiddenimports += collect_submodules('joblib')
 hiddenimports += collect_submodules('imagequant')
 hiddenimports += collect_submodules('pycparser')
 hiddenimports += collect_submodules('pythonnet')
+hiddenimports += collect_submodules('numba')
 hiddenimports += collect_submodules('clr')
 hiddenimports += collect_submodules('clr_loader')
 

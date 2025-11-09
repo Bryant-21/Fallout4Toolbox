@@ -160,7 +160,9 @@ class BulkPaletteWorker(QThread):
                                     pal_np = np.vstack([pal_np, pal_np[:max(1, self.palette_size - len(pal_np))]])
                                 pal_np = pal_np[:self.palette_size]
                         # Sort perceptually
+                        logger.debug(f"Starting Color Sort")
                         pal_sorted = np.array(perceptual_color_sort([tuple(c) for c in pal_np]), dtype=np.uint8)
+                        logger.debug(f"Colors Sorted")
 
                         # Map image to indices and save greyscale + colorized + per-image palette
                         arr = item['array_rgb']
