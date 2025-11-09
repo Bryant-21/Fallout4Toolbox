@@ -44,8 +44,7 @@ class ResType(Enum):
 class Config(QConfig):
 
     #shared
-    threads_default = max(1, os.cpu_count() or 1)
-    threads_cfg = RangeConfigItem("settings", "threads", threads_default, RangeValidator(1, os.cpu_count()))
+    threads_cfg = RangeConfigItem("settings", "threads", max(1, os.cpu_count() or 1), RangeValidator(1, os.cpu_count()))
 
     #DDS
     sizes_cfg = ConfigItem("dds_resizer", "sizes", "1024,2048")
@@ -68,7 +67,7 @@ class Config(QConfig):
                                                     serializer=EnumSerializer(ResType))
     ci_produce_color_report = ConfigItem("palette", "produce_color_report", False, BoolValidator())
     ci_produce_metadata_json = ConfigItem("palette", "produce_metadata_json", False, BoolValidator())
-    ci_palette_row_height = RangeConfigItem("palette", "palette_row_height", 2, RangeValidator(2, 8))
+    ci_palette_row_height = RangeConfigItem("palette", "palette_row_height", 4, RangeValidator(4, 16))
     ci_palette_color_iteration = RangeConfigItem("palette", "palette_color_iteration", 1000, RangeValidator(100, 2000))
     ci_suffix = ConfigItem("palette", "suffix", "_d")
     ci_exclude = ConfigItem("palette", "exclude", "")
@@ -77,6 +76,8 @@ class Config(QConfig):
     ci_group_name = ConfigItem("palette", "group_name", "")
     ci_lower_quant_factor = OptionsConfigItem("palette", "lower_quant_factor", 1.0, OptionsValidator([1.0, 0.5]))
     ci_use_faster_sort = ConfigItem("palette", "faster_color_sort", True, BoolValidator())
+    ci_replace_existing = ConfigItem("palette", "replace_existing", False, BoolValidator())
+    ci_single_palette = ConfigItem("palette", "single_palette", True, BoolValidator())
 
     #theme
     themeColor = ColorConfigItem("QFluentWidgets", "ThemeColor", '#ffa11d', restart=True)
@@ -144,7 +145,7 @@ class Config(QConfig):
 
 YEAR = 2025
 AUTHOR = "Bryant21"
-VERSION = '1.0.9'
+VERSION = '1.0.10'
 NEXUS_URL = "https://next.nexusmods.com/profile/Bryant21"
 HELP_URL = "https://github.com/Bryant-21/Fallout4Toolbox"
 FEEDBACK_URL = "https://github.com/Bryant-21/Fallout4Toolbox/issues"

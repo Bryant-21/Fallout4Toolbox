@@ -19,11 +19,12 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton, SegmentedWidget
 )
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.help.palette_help import PaletteHelp
 from src.palette.palette_engine import perceptual_color_sort, quantize_image, next_power_of_2, \
     analyze_color_distribution, convert_to_dds, pad_colors_to_target, rebuild_image_with_padded_colors, load_image, \
-    reduce_colors_lab_de00_with_hue_balance, remap_rgb_array_to_representatives
+    reduce_colors_lab_de00_with_hue_balance, remap_rgb_array_to_representatives, map_rgb_array_to_palette_indices
 from src.settings.palette_settings import PaletteSettings
 from src.utils.appconfig import cfg
 from src.utils.helpers import BaseWidget
@@ -227,15 +228,14 @@ class SinglePaletteGenerationWorker(QThread):
             extra_images_data = []
             if self.extra_image_paths:
                 self.progress_updated.emit(85, f"Quantizing {len(self.extra_image_paths)} extra image(s)...")
-                for p in self.extra_image_paths:
+
+                def _process_extra_image(p):
                     try:
                         ex_img = load_image(p)
                         ex_rgb = ex_img
                         ex_orig_w, ex_orig_h = ex_rgb.size
-                        # Apply working resolution downscale (no upscale)
                         ex_proc = downscale_keep_aspect(ex_rgb, self.working_resolution) if self.working_resolution else ex_rgb
 
-                        # Ensure not larger than base processed size
                         def fit_within(img, max_w, max_h):
                             w, h = img.size
                             if w <= max_w and h <= max_h:
@@ -247,33 +247,43 @@ class SinglePaletteGenerationWorker(QThread):
 
                         ex_proc2 = fit_within(ex_proc, width, height)
                         ex_w2, ex_h2 = ex_proc2.size
-                        # Quantize using same method and lut size
                         ex_quantized, _ = quantize_image(ex_proc2, cfg.get(cfg.ci_default_quant_method))
                         ex_quant_rgb = ex_quantized.convert('RGB')
                         ex_arr = np.array(ex_quant_rgb)
-                        extra_images_data.append({
+                        return {
                             'path': p,
                             'quantized_image': ex_quant_rgb,
                             'quantized_array': ex_arr,
                             'original_dimensions': (ex_orig_w, ex_orig_h),
                             'processed_dimensions': (ex_w2, ex_h2),
                             'dimensions': (ex_w2, ex_h2)
-                        })
+                        }
                     except Exception as ex:
                         logger.warning(f"Failed to process extra image '{p}': {ex}")
+                        return None
+
+                max_workers = max(1, int(cfg.get(cfg.threads_cfg)))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(_process_extra_image, p): idx for idx, p in enumerate(self.extra_image_paths)}
+                    ordered_results = [None] * len(self.extra_image_paths)
+                    for fut in as_completed(futures):
+                        idx = futures[fut]
+                        res = fut.result()
+                        ordered_results[idx] = res
+                    extra_images_data.extend([r for r in ordered_results if r is not None])
 
             # Quantize greyscale-conversion textures (to later map using base mapping)
             greyscale_textures_data = []
             if self.greyscale_texture_paths:
                 self.progress_updated.emit(88, f"Preparing {len(self.greyscale_texture_paths)} greyscale conversion texture(s)...")
-                for p in self.greyscale_texture_paths:
+
+                def _process_greyscale_texture(p):
                     try:
                         gs_img = load_image(p)
                         gs_rgb = gs_img
                         gs_orig_w, gs_orig_h = gs_rgb.size
                         gs_proc = downscale_keep_aspect(gs_rgb, self.working_resolution) if self.working_resolution else gs_rgb
 
-                        # Ensure not larger than base processed size
                         def fit_within(img, max_w, max_h):
                             w, h = img.size
                             if w <= max_w and h <= max_h:
@@ -285,20 +295,30 @@ class SinglePaletteGenerationWorker(QThread):
 
                         gs_proc2 = fit_within(gs_proc, width, height)
                         gs_w2, gs_h2 = gs_proc2.size
-                        # Quantize with same method/lut size (for stable color set); we'll still map to base
                         gs_quantized, _ = quantize_image(gs_proc2, cfg.get(cfg.ci_default_quant_method))
                         gs_quant_rgb = gs_quantized.convert('RGB')
                         gs_quant_arr = np.array(gs_quant_rgb)
-                        greyscale_textures_data.append({
+                        return {
                             'path': p,
                             'processed_color_image': gs_proc2.convert('RGB'),
                             'processed_color_array': np.array(gs_proc2.convert('RGB')),
                             'quantized_array': gs_quant_arr,
                             'original_dimensions': (gs_orig_w, gs_orig_h),
                             'processed_dimensions': (gs_w2, gs_h2)
-                        })
+                        }
                     except Exception as ex:
                         logger.warning(f"Failed to process greyscale texture '{p}': {ex}")
+                        return None
+
+                max_workers = max(1, int(cfg.get(cfg.threads_cfg)))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(_process_greyscale_texture, p): idx for idx, p in enumerate(self.greyscale_texture_paths)}
+                    ordered_results = [None] * len(self.greyscale_texture_paths)
+                    for fut in as_completed(futures):
+                        idx = futures[fut]
+                        res = fut.result()
+                        ordered_results[idx] = res
+                    greyscale_textures_data.extend([r for r in ordered_results if r is not None])
 
             # Prepare results for quantization step (always)
             results = {
@@ -382,13 +402,11 @@ class SinglePaletteGenerationWorker(QThread):
 
             self.progress_updated.emit(60, "Creating greyscale image...")
 
-            # Create greyscale image by replacing colors with assigned greyscale values
-            greyscale_array = np.zeros((height, width), dtype=np.uint8)
-
-            for i in range(height):
-                for j in range(width):
-                    color = tuple(quantized_array[i, j])
-                    greyscale_array[i, j] = color_to_grey[color]
+            # Create greyscale image indices using shared mapper
+            # Build a LUT from the sorted colors mapping to their greyscale indices
+            lut_exact = {tuple(map(int, c)): int(i) for i, c in enumerate(sorted_colors)}
+            pal_int16 = np.array(sorted_colors, dtype=np.uint8).astype(np.int16)
+            greyscale_array = map_rgb_array_to_palette_indices(quantized_array, lut_exact, pal_int16).astype(np.uint8)
 
             # Convert to RGB for display
             greyscale_image = Image.fromarray(greyscale_array, 'L')
@@ -403,25 +421,7 @@ class SinglePaletteGenerationWorker(QThread):
                 self.progress_updated.emit(80, f"Mapping {len(gs_sources)} greyscale conversion texture(s)...")
                 palette = np.array(sorted_colors, dtype=np.int16)  # use int16 to avoid uint8 overflow during diff
 
-                def map_image_to_greyscale(img_arr_rgb):
-                    h, w = img_arr_rgb.shape[:2]
-                    flat = img_arr_rgb.reshape(-1, 3).astype(np.int16)
-                    # chunked nearest palette index computation to control memory
-                    idx_all = np.empty((flat.shape[0],), dtype=np.int32)
-                    chunk = 200000
-                    for start in range(0, flat.shape[0], chunk):
-                        end = min(start + chunk, flat.shape[0])
-                        block = flat[start:end][:, None, :]  # (n,1,3)
-                        diffs = block - palette[None, :, :]  # (n,lut,3)
-                        d2 = np.sum(diffs * diffs, axis=2)  # (n,lut)
-                        idx_all[start:end] = np.argmin(d2, axis=1)
-                    idx_img = idx_all.reshape(h, w).astype(np.uint16)
-                    # map to 0..palette_size-1 greys (already indices)
-                    gs_indices = idx_img.astype(np.uint8)
-                    disp = (gs_indices * (255 / (palette_size - 1))).astype(np.uint8)
-                    gs_img = Image.fromarray(disp, 'L').convert('RGB')
-                    return gs_indices, gs_img
-
+                # Reuse the already built palette and mapping to compute indices for each extra image
                 for entry in gs_sources:
                     try:
                         proc_img = entry.get('processed_color_image')
@@ -435,7 +435,10 @@ class SinglePaletteGenerationWorker(QThread):
                             proc_arr = entry.get('quantized_array')
                         if proc_arr is None:
                             continue
-                        gs_indices, gs_img = map_image_to_greyscale(proc_arr)
+                        # Map using shared engine function
+                        gs_indices = map_rgb_array_to_palette_indices(proc_arr, lut_exact, pal_int16).astype(np.uint8)
+                        disp = (gs_indices * (255 / (palette_size - 1))).astype(np.uint8)
+                        gs_img = Image.fromarray(disp, 'L').convert('RGB')
                         greyscale_textures_results.append({
                             'path': entry.get('path'),
                             'processed_color_image': proc_img if proc_img is not None else Image.fromarray(
@@ -1402,19 +1405,6 @@ class PaletteGenerator(BaseWidget):
         # Check if source is DDS and if texconv is available
         source_is_dds = self.current_image_path.lower().endswith('.dds')
         generate_dds = source_is_dds  # Only generate DDS if source is DDS
-
-        if step in ['all', 'palette'] and generate_dds:
-            reply = QMessageBox.question(
-                self,
-                "texconv.exe not found",
-                "Source image is DDS format but texconv.exe was not found or is invalid. "
-                "DDS files cannot be generated. Do you want to continue without DDS generation?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.No:
-                return
-            generate_dds = False
 
         # Disable buttons during processing and use parent mask progress
         self.set_buttons_enabled(False)

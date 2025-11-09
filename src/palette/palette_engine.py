@@ -133,9 +133,9 @@ def quantize_image(image, method, use_lower_quant=False):
                 # and Floyd-Steinberg dithering biases toward quality.
                 quantized = imagequant.quantize_pil_image(
                     image,
-                    dithering_level=1.0,
+                    dithering_level=0.0,
                     max_colors=intermediate_colors,
-                    min_quality=0,  # from 0 to 100
+                    min_quality=75,  # from 0 to 100
                     max_quality=100,  # from 0 to 100
                 )
                 info['description'] = "LibImageQuant - High quality (favoring quality over speed)"
@@ -338,11 +338,19 @@ def analyze_color_distribution(quantized_array):
 
 
 def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256, palette_height=8):
-    """Convert image to DDS format using texconv.exe"""
+    """Convert image to DDS format using texconv.exe.
+
+    Notes:
+    - texconv derives the output filename from the INPUT filename and only lets us pick the output directory via -o.
+      To ensure the final filename matches `output_path`, we rename (move) the produced file to `output_path` after conversion.
+    """
     logger.debug(f"Converting to DDS: {input_path} -> {output_path}")
     try:
+        out_dir = os.path.dirname(output_path) or '.'
+        os.makedirs(out_dir, exist_ok=True)
+
         if is_palette:
-            # Use provided Palette dimensions
+            # Use provided palette dimensions
             cmd = [
                 TEXCONV_EXE,
                 '-f', 'BC7_UNORM',
@@ -352,7 +360,7 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256,
                 '-h', str(palette_height),
                 '-srgb',
                 input_path,
-                '-o', os.path.dirname(output_path)
+                '-o', out_dir
             ]
         else:
             cmd = [
@@ -362,7 +370,7 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256,
                 '-m', '1',
                 '-srgb',
                 input_path,
-                '-o', os.path.dirname(output_path)
+                '-o', out_dir
             ]
 
         logger.debug(f"Running texconv command: {' '.join(cmd)}")
@@ -372,6 +380,45 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256,
             raise Exception(f"texconv failed: {result.stderr}")
         else:
             logger.debug("DDS conversion successful")
+
+        # Determine the file texconv actually wrote (derived from input filename)
+        produced_name = os.path.splitext(os.path.basename(input_path))[0] + '.DDS'
+        produced_path = os.path.join(out_dir, produced_name)
+        if not os.path.exists(produced_path):
+            # Try lowercase extension as a fallback
+            produced_name = os.path.splitext(os.path.basename(input_path))[0] + '.dds'
+            produced_path = os.path.join(out_dir, produced_name)
+
+        if not os.path.exists(produced_path):
+            # As a last resort, scan for any DDS created very recently in out_dir matching the base name
+            base = os.path.splitext(os.path.basename(input_path))[0]
+            candidates = [
+                os.path.join(out_dir, f) for f in os.listdir(out_dir)
+                if f.lower().endswith('.dds') and os.path.splitext(f)[0] == base
+            ]
+            if candidates:
+                produced_path = candidates[0]
+
+        if not os.path.exists(produced_path):
+            raise Exception(f"texconv did not produce expected DDS file for input '{input_path}' in '{out_dir}'")
+
+        # Ensure output extension is .dds
+        desired_out = output_path
+        root, ext = os.path.splitext(desired_out)
+        if ext.lower() != '.dds':
+            desired_out = root + '.dds'
+
+        # If the produced file already has the correct path/name, nothing to do
+        if os.path.abspath(produced_path) != os.path.abspath(desired_out):
+            # If destination exists and replace is intended, remove it first
+            try:
+                if os.path.exists(desired_out):
+                    os.remove(desired_out)
+            except Exception as remove_ex:
+                logger.warning(f"Failed to remove existing output before rename: {desired_out}: {remove_ex}")
+            # Move/rename atomically
+            os.replace(produced_path, desired_out)
+        logger.debug(f"DDS file written: {desired_out}")
 
     except subprocess.TimeoutExpired:
         logger.error("texconv timed out")
@@ -606,6 +653,158 @@ def remap_rgb_array_to_representatives(arr_rgb: np.ndarray, color_map: dict) -> 
         mask = (flat[:, 0] == t[0]) & (flat[:, 1] == t[1]) & (flat[:, 2] == t[2])
         remapped[mask] = rep
     return remapped.reshape(arr_rgb.shape)
+
+
+def build_palette_from_rgb_array(colors_source: np.ndarray, target_size: int):
+    """
+    Build a reduced palette from an RGB array by merging perceptually similar colors until the
+    number of clusters is <= target_size. Uses LAB + ΔE00 for clustering and returns medoid reps.
+
+    Args:
+        colors_source: RGB ndarray, shape (H,W,3) or (N,3), dtype uint8 preferred.
+        target_size: desired maximum palette size.
+
+    Returns:
+        kept_reps: list of RGB tuples (<= target_size)
+        color_map: dict mapping original color tuple -> representative tuple
+        pad_candidates: list of additional representative candidates not kept (best-first)
+    """
+    if colors_source is None:
+        return [], {}, []
+    arr = np.asarray(colors_source)
+    if arr.size == 0:
+        return [], {}, []
+    if arr.ndim == 3:
+        arr = arr.reshape(-1, arr.shape[2])
+    if arr.shape[1] != 3:
+        raise ValueError("colors_source must have shape (*, 3)")
+    colors = np.unique(arr.astype(np.uint8), axis=0)
+    if len(colors) == 0:
+        return [], {}, []
+
+    labs = rgb_to_lab_array(colors.tolist()).astype(np.float64)
+
+    def de00_to_centers(lab_point: np.ndarray, centers: np.ndarray) -> np.ndarray:
+        lp = lab_point.reshape(1, 1, 3)
+        ct = centers.reshape(-1, 1, 3)
+        return deltaE_ciede2000(ct, lp).reshape(-1)
+
+    thresholds = list(range(0, 21, 1))
+    best_result = None
+    for thresh in thresholds:
+        kept_labs = []
+        clusters = []
+        for i, lab_i in enumerate(labs):
+            if not kept_labs:
+                kept_labs.append(lab_i.copy())
+                clusters.append([i])
+                continue
+            centers = np.vstack(kept_labs)
+            d = de00_to_centers(lab_i, centers)
+            j = int(np.argmin(d))
+            if d[j] <= thresh:
+                clusters[j].append(i)
+                members = clusters[j]
+                kept_labs[j] = np.mean(labs[members], axis=0)
+            else:
+                kept_labs.append(lab_i.copy())
+                clusters.append([i])
+        num_clusters = len(clusters)
+        best_result = (clusters, np.vstack(kept_labs) if kept_labs else np.empty((0, 3)))
+        if num_clusters <= target_size:
+            break
+
+    clusters, kept_labs = best_result
+
+    reps = []
+    rep_index_of_cluster = []
+    for members in clusters:
+        if len(members) == 0:
+            continue
+        if len(members) == 1:
+            k = members[0]
+            reps.append(tuple(int(x) for x in colors[k]))
+            rep_index_of_cluster.append(k)
+            continue
+        member_idx = np.array(members, dtype=int)
+        member_labs = labs[member_idx]
+        costs = []
+        for m in range(member_labs.shape[0]):
+            d = deltaE_ciede2000(member_labs[m].reshape(1, 1, 3), member_labs.reshape(-1, 1, 3)).reshape(-1)
+            costs.append(float(np.sum(d)))
+        min_idx = int(np.argmin(np.array(costs)))
+        k = int(member_idx[min_idx])
+        reps.append(tuple(int(x) for x in colors[k]))
+        rep_index_of_cluster.append(k)
+
+    n_clusters = len(reps)
+    kept_indices = list(range(n_clusters))
+    pad_candidates = []
+    if n_clusters > target_size:
+        sizes = [len(clusters[i]) for i in range(n_clusters)]
+        order = sorted(range(n_clusters), key=lambda i: -sizes[i])
+        kept_indices = order[:target_size]
+        pad_candidates = [reps[i] for i in order[target_size:]]
+
+    kept_reps = [reps[i] for i in kept_indices]
+    kept_rep_indices = [rep_index_of_cluster[i] for i in kept_indices]
+    kept_rep_labs = labs[kept_rep_indices]
+
+    color_map = {}
+    for idx in range(len(colors)):
+        lab_i = labs[idx]
+        d = deltaE_ciede2000(kept_rep_labs.reshape(-1, 1, 3), lab_i.reshape(1, 1, 3)).reshape(-1)
+        j = int(np.argmin(d))
+        color_map[tuple(colors[idx])] = kept_reps[j]
+
+    return kept_reps, color_map, pad_candidates
+
+
+def nearest_palette_index(color: np.ndarray, palette_int16: np.ndarray) -> int:
+    """Return index of nearest palette color by Euclidean distance in RGB."""
+    diff = palette_int16 - color.astype(np.int16)
+    d2 = np.sum(diff * diff, axis=1)
+    return int(np.argmin(d2))
+
+
+def map_rgb_array_to_palette_indices(arr_rgb: np.ndarray, lut_exact: dict, palette_int16: np.ndarray) -> np.ndarray:
+    """
+    Map an RGB image array to palette indices using an optional exact LUT first, then nearest search.
+
+    Args:
+        arr_rgb: (H,W,3) uint8 array of image pixels.
+        lut_exact: dict mapping exact RGB tuples -> palette index (int). Can be empty.
+        palette_int16: (P,3) int16 palette array for nearest search.
+
+    Returns:
+        (H,W) uint16 array of palette indices.
+    """
+    h, w = arr_rgb.shape[:2]
+    flat = arr_rgb.reshape(-1, 3)
+    indices = np.full((flat.shape[0],), 0, dtype=np.uint16)
+    unmatched_mask = np.ones((flat.shape[0],), dtype=bool)
+    # Fast exact pass
+    for i in range(flat.shape[0]):
+        t = tuple(int(x) for x in flat[i])
+        if t in lut_exact:
+            indices[i] = lut_exact[t]
+            unmatched_mask[i] = False
+    # Nearest for unmatched
+    if unmatched_mask.any():
+        cand = flat[unmatched_mask]
+        pal = palette_int16
+        chunk = 100000
+        start = 0
+        where_idx = np.where(unmatched_mask)[0]
+        while start < cand.shape[0]:
+            end = min(start + chunk, cand.shape[0])
+            c = cand[start:end].astype(np.int16)[:, None, :]
+            diff = pal[None, :, :] - c
+            d2 = np.sum(diff * diff, axis=2)
+            nearest = np.argmin(d2, axis=1)
+            indices[where_idx[start:end]] = nearest.astype(np.uint16)
+            start = end
+    return indices.reshape(h, w)
 
 
 def perceptual_color_sort(colors):

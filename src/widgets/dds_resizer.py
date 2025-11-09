@@ -143,10 +143,19 @@ class Worker(QtCore.QThread):
             skip_rel_roots: list[str] = []
             if out_abs and src_abs and os.path.normcase(out_abs).startswith(os.path.normcase(src_abs)):
                 out_rel = os.path.relpath(out_abs, src_abs).replace('\\', '/').strip('/')
+                # Normalize: if output equals source, out_rel becomes '.'; treat as empty
+                out_rel_norm = '' if out_rel in ('', '.') else out_rel
                 if self.per_size_subfolders and self.sizes:
-                    skip_rel_roots = [f"{out_rel}/{size}" for size in self.sizes]
+                    # When output equals source, only skip the per-size folders at the root (e.g., '512')
+                    if out_rel_norm:
+                        skip_rel_roots = [f"{out_rel_norm}/{size}" for size in self.sizes]
+                    else:
+                        skip_rel_roots = [str(size) for size in self.sizes]
                 else:
-                    skip_rel_roots = [out_rel]
+                    # Only skip the explicit output subfolder if it exists under source; do not skip '.'
+                    skip_rel_roots = [out_rel_norm] if out_rel_norm else []
+            # Guard: remove empties to avoid skipping the entire tree
+            skip_rel_roots = [sk for sk in skip_rel_roots if sk and sk != '.']
 
             def _should_skip_dir(rel_child: str) -> bool:
                 rel_child = (rel_child or '').replace('\\', '/').strip('/')
