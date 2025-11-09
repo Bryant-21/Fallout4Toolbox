@@ -343,6 +343,8 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256,
     Notes:
     - texconv derives the output filename from the INPUT filename and only lets us pick the output directory via -o.
       To ensure the final filename matches `output_path`, we rename (move) the produced file to `output_path` after conversion.
+    - On Windows (case-insensitive FS), renaming a file that differs only by letter case (e.g., .DDS → .dds) can fail.
+      We therefore treat paths equal in a case-insensitive way and skip the rename when only case differs.
     """
     logger.debug(f"Converting to DDS: {input_path} -> {output_path}")
     try:
@@ -378,28 +380,28 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256,
         if result.returncode != 0:
             logger.error(f"texconv failed: {result.stderr}")
             raise Exception(f"texconv failed: {result.stderr}")
-        else:
-            logger.debug("DDS conversion successful")
 
         # Determine the file texconv actually wrote (derived from input filename)
-        produced_name = os.path.splitext(os.path.basename(input_path))[0] + '.DDS'
-        produced_path = os.path.join(out_dir, produced_name)
-        if not os.path.exists(produced_path):
-            # Try lowercase extension as a fallback
-            produced_name = os.path.splitext(os.path.basename(input_path))[0] + '.dds'
-            produced_path = os.path.join(out_dir, produced_name)
+        base = os.path.splitext(os.path.basename(input_path))[0]
+        produced_candidates = [base + '.DDS', base + '.dds']
+        produced_path = None
+        for cand in produced_candidates:
+            p = os.path.join(out_dir, cand)
+            if os.path.exists(p):
+                produced_path = p
+                break
 
-        if not os.path.exists(produced_path):
-            # As a last resort, scan for any DDS created very recently in out_dir matching the base name
-            base = os.path.splitext(os.path.basename(input_path))[0]
-            candidates = [
-                os.path.join(out_dir, f) for f in os.listdir(out_dir)
-                if f.lower().endswith('.dds') and os.path.splitext(f)[0] == base
-            ]
-            if candidates:
-                produced_path = candidates[0]
+        if not produced_path:
+            # As a last resort, scan for any DDS created in out_dir matching the base name (case-insensitive)
+            try:
+                for f in os.listdir(out_dir):
+                    if f.lower().endswith('.dds') and os.path.splitext(f)[0] == base:
+                        produced_path = os.path.join(out_dir, f)
+                        break
+            except Exception:
+                produced_path = None
 
-        if not os.path.exists(produced_path):
+        if not produced_path or not os.path.exists(produced_path):
             raise Exception(f"texconv did not produce expected DDS file for input '{input_path}' in '{out_dir}'")
 
         # Ensure output extension is .dds
@@ -407,6 +409,14 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256,
         root, ext = os.path.splitext(desired_out)
         if ext.lower() != '.dds':
             desired_out = root + '.dds'
+
+        # If paths refer to the same file ignoring case, skip renaming (Windows case-insensitive FS)
+        produced_norm = os.path.normcase(os.path.abspath(produced_path))
+        desired_norm = os.path.normcase(os.path.abspath(desired_out))
+        if produced_norm == desired_norm:
+            # Nothing to do; file already at desired location/name (ignoring case)
+            logger.debug(f"DDS file written: {produced_path}")
+            return
 
         # If the produced file already has the correct path/name, nothing to do
         if os.path.abspath(produced_path) != os.path.abspath(desired_out):
@@ -417,7 +427,24 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256,
             except Exception as remove_ex:
                 logger.warning(f"Failed to remove existing output before rename: {desired_out}: {remove_ex}")
             # Move/rename atomically
-            os.replace(produced_path, desired_out)
+            try:
+                os.replace(produced_path, desired_out)
+            except FileNotFoundError:
+                # A rare race or case-only rename issue; re-scan and try one more time
+                try:
+                    for f in os.listdir(out_dir):
+                        if f.lower().endswith('.dds') and os.path.splitext(f)[0] == base:
+                            retry_src = os.path.join(out_dir, f)
+                            if os.path.normcase(os.path.abspath(retry_src)) == desired_norm:
+                                # Already at desired (case-insensitive)
+                                logger.debug(f"DDS file written: {retry_src}")
+                                return
+                            os.replace(retry_src, desired_out)
+                            logger.debug(f"DDS file written: {desired_out}")
+                            return
+                except Exception as _:
+                    pass
+                raise
         logger.debug(f"DDS file written: {desired_out}")
 
     except subprocess.TimeoutExpired:
