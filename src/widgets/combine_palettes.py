@@ -16,11 +16,10 @@ from qfluentwidgets import (
 from help.palette_combiner_help import PaletteCombineHelp
 from settings.palette_settings import PaletteSettings
 from src.palette.palette_engine import (
-    convert_to_dds,
-    load_image,
     next_power_of_2,
     perceptual_color_sort,
 )
+from src.utils.dds_utils import save_image, load_image
 from src.utils.appconfig import cfg, ConfigItem
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
@@ -256,36 +255,11 @@ class CombinePalettesWorker(QThread):
                     # Save greyscale and quant
                     grey_base = f"{base_with_merged}_greyscale"
                     color_base = f"{base_with_merged}_quant"
-
-                    if src_ext == '.dds':
-                        tmp_grey_png = os.path.join(self.output_dir, grey_base + '.png')
-                        Image.fromarray(grey_indices, mode='L').save(tmp_grey_png)
-                        grey_out = os.path.join(self.output_dir, grey_base + '.dds')
-                        try:
-                            convert_to_dds(tmp_grey_png, grey_out, is_palette=False)
-                        finally:
-                            try:
-                                os.remove(tmp_grey_png)
-                            except Exception:
-                                pass
-
-                        color_arr = unified_palette[grey_indices]
-                        tmp_color_png = os.path.join(self.output_dir, color_base + '.png')
-                        Image.fromarray(color_arr.astype(np.uint8), mode='RGB').save(tmp_color_png)
-                        color_out = os.path.join(self.output_dir, color_base + '.dds')
-                        try:
-                            convert_to_dds(tmp_color_png, color_out, is_palette=False)
-                        finally:
-                            try:
-                                os.remove(tmp_color_png)
-                            except Exception:
-                                pass
-                    else:
-                        grey_out = os.path.join(self.output_dir, grey_base + src_ext)
-                        Image.fromarray(grey_indices, mode='L').save(grey_out)
-                        color_arr = unified_palette[grey_indices]
-                        color_out = os.path.join(self.output_dir, color_base + src_ext)
-                        Image.fromarray(color_arr.astype(np.uint8), mode='RGB').save(color_out)
+                    grey_out = os.path.join(self.output_dir, grey_base, src_ext)
+                    color_out = os.path.join(self.output_dir, color_base,src_ext)
+                    color_arr = unified_palette[grey_indices]
+                    save_image(Image.fromarray(grey_indices, mode='L'), grey_out)
+                    save_image(Image.fromarray(color_arr.astype(np.uint8), mode='RGB'), color_out)
 
                     results.append({
                         'source_greyscale': item['path'],
@@ -309,21 +283,8 @@ class CombinePalettesWorker(QThread):
             if all(os.path.splitext(self._find_group_palette_path(g, files_lc))[1].lower() == '.dds' for g in self.groups):
                 palette_ext = '.dds'
 
-            palette_base = os.path.join(self.output_dir, "merged_palette")
-            if palette_ext == '.dds':
-                tmp_png = palette_base + '.png'
-                palette_img.save(tmp_png)
-                palette_out = palette_base + '.dds'
-                try:
-                    convert_to_dds(tmp_png, palette_out, is_palette=True, palette_width=palette_width, palette_height=palette_height)
-                finally:
-                    try:
-                        os.remove(tmp_png)
-                    except Exception:
-                        pass
-            else:
-                palette_out = palette_base + palette_ext
-                palette_img.save(palette_out)
+            palette_out = os.path.join(self.output_dir, "merged_palette", palette_ext)
+            save_image(palette_img, palette_out)
 
             self.progress.emit(100, "Palette group merge complete")
             self.completed.emit({

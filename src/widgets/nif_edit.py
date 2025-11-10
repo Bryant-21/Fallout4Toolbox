@@ -16,7 +16,6 @@ from qfluentwidgets import (
 )
 
 from help.nif_help import NifHelp
-from palette.palette_engine import load_image
 from settings.basic_settings import BasicSettings
 from src.utils.appconfig import cfg
 from src.utils.capabilities import CAPABILITIES
@@ -24,6 +23,7 @@ from src.utils.cards import ComboBoxSettingsCard
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
+from src.utils.dds_utils import load_image
 from utils.imageutils import dilation_fill_static
 
 if CAPABILITIES["mip_flooding"]:

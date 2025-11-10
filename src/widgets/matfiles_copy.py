@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QMessageBox
 )
 from qfluentwidgets import FluentIcon as FIF
-from qfluentwidgets import PrimaryPushButton, PushSettingCard, ConfigItem, FolderValidator
+from qfluentwidgets import PrimaryPushButton, PushSettingCard, SwitchSettingCard
 
 from src.help.matfiles_help import MatfilesHelp
 from src.material_tools.bgem_bin import read_bgem, BGEMData
@@ -22,7 +22,7 @@ from src.material_tools.json_handler import (
 
 from src.settings.matfiles_settings import MatFilesSettings
 from src.utils.appconfig import cfg
-from src.utils.cards import TextSettingCard
+from src.utils.cards import TextSettingCard, DoubleSpinSettingCard
 from src.utils.helpers import BaseWidget
 from src.utils.logging_utils import logger
 
@@ -60,7 +60,27 @@ def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def each_material_file(root: str, skip_dirnames: set[str] | None = None, skip_roots: list[str] | None = None) -> Iterable[str]:
+def each_material_file(root: str, skip_dirnames: set[str] | None = None, skip_roots: list[str] | None = None, recursive: bool = False) -> Iterable[str]:
+    """Yield material files from the root directory.
+    By default, this only scans the top-level of `root` (no subdirectories).
+    Set `recursive=True` to walk subdirectories as well.
+    `skip_dirnames` and `skip_roots` are only relevant when `recursive=True`.
+    """
+    if not recursive:
+        # Non-recursive: only consider files directly under `root`
+        try:
+            for name in os.listdir(root):
+                full_path = os.path.join(root, name)
+                if not os.path.isfile(full_path):
+                    continue
+                lower = name.lower()
+                if lower.endswith('.bgsm') or lower.endswith('.bgem') or lower.endswith('.json'):
+                    yield full_path
+        except OSError:
+            return
+        return
+
+    # Recursive mode
     skip_dirnames = skip_dirnames or set()
     skip_roots = [os.path.abspath(p) for p in (skip_roots or [])]
     for dirpath, dirnames, filenames in os.walk(root):
@@ -113,7 +133,7 @@ def prefix_texture(s: str | None, folder: str) -> str | None:
         return f"{folder}/{fname}"
 
 
-def process_binary_bgsm(src_path: str, folders: list[str], out_root: str | None, selected_paths: set[str] | None = None, logger=None) -> None:
+def process_binary_bgsm(src_path: str, folders: list[str], out_root: str | None, selected_paths: set[str] | None = None, grayscale_to_palette_scale: float | None = None, logger=None) -> None:
     if logger:
         logger(f"Reading BGSM: {src_path}")
     with open(src_path, 'rb') as f:
@@ -127,6 +147,12 @@ def process_binary_bgsm(src_path: str, folders: list[str], out_root: str | None,
                 val = getattr(new_bgsm, attr, None)
                 if isinstance(val, str) and val:
                     setattr(new_bgsm, attr, prefix_texture(val, folder) or "")
+        # Optionally set grayscale-to-palette scale
+        if grayscale_to_palette_scale is not None:
+            try:
+                new_bgsm.GrayscaleToPaletteScale = float(grayscale_to_palette_scale)
+            except Exception:
+                pass
         # Apply selection across supported BGSM fields
         for attr in (
             "DiffuseTexture",
@@ -187,7 +213,7 @@ def process_binary_bgem(src_path: str, folders: list[str], out_root: str | None,
             logger(f"Wrote BGEM: {out_path} (folder={folder})")
 
 
-def process_json(src_path: str, folders: list[str], out_root: str | None, include_bgsm: bool = True, include_bgem: bool = True, selected_paths: set[str] | None = None, logger=None) -> None:
+def process_json(src_path: str, folders: list[str], out_root: str | None, include_bgsm: bool = True, include_bgem: bool = True, selected_paths: set[str] | None = None, grayscale_to_palette_scale: float | None = None, logger=None) -> None:
     mat_type, obj = load_json(src_path)
     # Filter by type if requested
     if (mat_type == 'BGSM' and not include_bgsm) or (mat_type == 'BGEM' and not include_bgem):
@@ -196,6 +222,12 @@ def process_json(src_path: str, folders: list[str], out_root: str | None, includ
         return
     for folder in folders:
         new_obj = update_textures_json(obj, mat_type, folder, selected_paths=selected_paths)
+        # Optionally set grayscale-to-palette scale for BGSM JSONs
+        if grayscale_to_palette_scale is not None and mat_type == 'BGSM':
+            try:
+                new_obj['fGrayscaleToPaletteScale'] = float(grayscale_to_palette_scale)
+            except Exception:
+                pass
         base_dir = out_root or os.path.dirname(src_path)
         target_dir = os.path.join(base_dir, folder)
         ensure_dir(target_dir)
@@ -205,7 +237,7 @@ def process_json(src_path: str, folders: list[str], out_root: str | None, includ
             logger(f"Wrote JSON {mat_type}: {out_path} (folder={folder})")
 
 
-def run(input_dir: str, folders: list[str], out_root: str | None = None, include_bgsm: bool = True, include_bgem: bool = True, selected_paths: set[str] | None = None, exclude_patterns: list[str] | None = None, logger=None) -> None:
+def run(input_dir: str, folders: list[str], out_root: str | None = None, include_bgsm: bool = True, include_bgem: bool = True, selected_paths: set[str] | None = None, exclude_patterns: list[str] | None = None, grayscale_to_palette_scale: float | None = None, clean_output: bool = False, logger=None) -> None:
     def emit(msg: str) -> None:
         if logger:
             try:
@@ -215,11 +247,12 @@ def run(input_dir: str, folders: list[str], out_root: str | None = None, include
                 pass
     input_dir_abs = os.path.abspath(input_dir)
     out_root_abs = os.path.abspath(out_root) if out_root else None
+    write_root_abs = out_root_abs or input_dir_abs
 
     sel_display = sorted(selected_paths) if selected_paths else '(default)'
     ex_display = ', '.join(exclude_patterns) if exclude_patterns else '(none)'
     emit(
-        f"Run params:\n  input_dir={input_dir_abs}\n  out_root={out_root_abs or '(same as input)'}\n  folders={folders}\n  include_bgsm={include_bgsm} include_bgem={include_bgem}\n  selected_paths={sel_display}\n  exclude_patterns={ex_display}"
+        f"Run params:\n  input_dir={input_dir_abs}\n  out_root={out_root_abs or '(same as input)'}\n  folders={folders}\n  include_bgsm={include_bgsm} include_bgem={include_bgem}\n  selected_paths={sel_display}\n  exclude_patterns={ex_display}\n  grayscale_to_palette_scale={grayscale_to_palette_scale if grayscale_to_palette_scale is not None else '(unchanged)'}\n  clean_output={clean_output}"
     )
 
     # Normalize exclude patterns to lowercase for case-insensitive matching
@@ -242,6 +275,33 @@ def run(input_dir: str, folders: list[str], out_root: str | None = None, include
         emit(f"Skipping subdirectories by name: {sorted(skip_names)}")
     if skip_roots:
         emit(f"Skipping concrete output roots: {skip_roots}")
+
+    # Optionally clean target subfolders before copying
+    if clean_output:
+        try:
+            for f in folders:
+                target_dir = os.path.join(write_root_abs, f)
+                if not os.path.exists(target_dir):
+                    continue
+                emit(f"Cleaning output folder: {target_dir}")
+                # Remove files and empty subdirectories inside target_dir
+                for dirpath, dirnames, filenames in os.walk(target_dir, topdown=False):
+                    for name in filenames:
+                        fp = os.path.join(dirpath, name)
+                        try:
+                            os.remove(fp)
+                        except Exception as ex:
+                            emit(f"  Failed to remove file {fp}: {ex}")
+                    for d in dirnames:
+                        dp = os.path.join(dirpath, d)
+                        try:
+                            # Only remove if empty after files removed
+                            os.rmdir(dp)
+                        except OSError:
+                            # Non-empty, leave it
+                            pass
+        except Exception as ex:
+            emit(f"Failed to clean output folders: {ex}")
 
     scanned = 0
     processed_bgsm = 0
@@ -284,7 +344,7 @@ def run(input_dir: str, folders: list[str], out_root: str | None = None, include
                     skipped_filtered += 1
                     emit(f"  -> Skipped by type filter")
                 else:
-                    process_json(path, folders, out_root_abs, include_bgsm=include_bgsm, include_bgem=include_bgem, selected_paths=selected_paths, logger=logger)
+                    process_json(path, folders, write_root_abs, include_bgsm=include_bgsm, include_bgem=include_bgem, selected_paths=selected_paths, grayscale_to_palette_scale=grayscale_to_palette_scale, logger=logger)
                     if jtype == 'BGSM':
                         processed_json_bgsm += 1
                     elif jtype == 'BGEM':
@@ -297,7 +357,7 @@ def run(input_dir: str, folders: list[str], out_root: str | None = None, include
                     emit(f"Found BGSM (binary), skipped by filter: {path}")
                 else:
                     emit(f"Processing BGSM (binary): {path}")
-                    process_binary_bgsm(path, folders, out_root_abs, selected_paths=selected_paths, logger=logger)
+                    process_binary_bgsm(path, folders, write_root_abs, selected_paths=selected_paths, grayscale_to_palette_scale=grayscale_to_palette_scale, logger=logger)
                     processed_bgsm += 1
             elif mtype == 'BGEM':
                 if not include_bgem:
@@ -332,10 +392,11 @@ class MaterialToolUI(BaseWidget):
     def __init__(self, parent, text):
         super().__init__(parent=parent, text=text, vertical=True)
 
-        self.input_dir = ConfigItem("material", "input_dir", "")
-        self.output_root = ConfigItem("material", "output_root", "")
-        self.folders_cfg = ConfigItem("material", "folders", "")
-        self.excludes_cfg = ConfigItem("material", "excludes", "")
+        # Use shared app config items instead of local definitions
+        self.input_dir = cfg.input_dir
+        self.output_root = cfg.output_root
+        self.folders_cfg = cfg.folders_cfg
+        self.excludes_cfg = cfg.excludes_cfg
 
         # --- Main scroll area ---
         scroll_area = QtWidgets.QScrollArea()
@@ -373,6 +434,24 @@ class MaterialToolUI(BaseWidget):
         self.addToFrame(self.output_root_card)
         self.addToFrame(self.folders_card)
         self.addToFrame(self.excludes_card)
+
+        # Clean output folders option
+        self.clean_output_card = SwitchSettingCard(
+            FIF.DELETE,
+            self.tr("Clean target folders before copy"),
+            self.tr("Removes any files inside each target subfolder before writing"),
+            cfg.clean_output_cfg,
+        )
+        self.addToFrame(self.clean_output_card)
+
+        # Grayscale To Palette Scale (optional)
+        self.grayscale_scale_card = DoubleSpinSettingCard(
+            cfg.grayscale_to_palette_scale_cfg,
+            FIF.EDIT,
+            self.tr("Grayscale To Palette Scale")
+        )
+        self.addToFrame(self.grayscale_scale_card)
+
         self.boxLayout.addStretch(1)
 
 
@@ -450,7 +529,7 @@ class MaterialToolUI(BaseWidget):
         self.run_button.setEnabled(False)
 
         try:
-            run(input_dir, folders, out_root, include_bgsm=include_bgsm, include_bgem=include_bgem, selected_paths=selected_paths or None, exclude_patterns=excludes, logger=logger.debug)
+            run(input_dir, folders, out_root, include_bgsm=include_bgsm, include_bgem=include_bgem, selected_paths=selected_paths or None, exclude_patterns=excludes, grayscale_to_palette_scale=(None if cfg.grayscale_to_palette_scale_cfg.value <= 0 else float(cfg.grayscale_to_palette_scale_cfg.value)), clean_output=bool(cfg.clean_output_cfg.value), logger=logger.debug)
             logger.debug("Done.")
         except Exception as ex:
             tb = traceback.format_exc()

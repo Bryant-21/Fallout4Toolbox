@@ -45,6 +45,14 @@ class PaletteHelp(ScrollArea):
             Repeat, it CANNOT contain any new colors, and MUST only use the same colors as the "base" texture. 
             
             https://fallout.wiki/wiki/Resource:Using_pallettes_for_recoloring_in_Fallout_4
+            
+            Dither Methods
+            •"none" — leave indices unchanged.
+            •"median" — median filter on indices (removes isolated outliers while preserving edges).
+            •"gaussian" — mild blur of indices (softens edges; more “anti‑aliased” look).
+            •"dither" — ordered Bayer dithering on normalized indices (adds subtle texture to mask banding).
+            • "median_dither" — median filter first, then ordered dithering (clean up specks, then add gentle texture).
+            • "gaussian_dither" — gaussian blur first, then ordered dithering (soften edges, then add gentle texture).
              
             """,
             height=300

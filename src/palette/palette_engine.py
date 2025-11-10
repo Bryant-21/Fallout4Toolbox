@@ -1,180 +1,17 @@
+import math
 import os
-import subprocess
 from collections import Counter
 
-import imagequant
 import numpy as np
-from PIL import Image
-from PIL.Image import Quantize, Palette
-from skimage.color import rgb2lab, deltaE_ciede2000
+from PIL import Image, ImageFilter
 from numba import njit, prange
-import numpy as np
-from src.utils.appconfig import cfg, TEXCONV_EXE
+from skimage.color import rgb2lab, deltaE_ciede2000
+
+from src.utils.appconfig import QuantAlgorithm
+from src.utils.appconfig import cfg
 from src.utils.logging_utils import logger
-
-
-def load_image(path, format='RGB'):
-    """Load an image path into a PIL Image.
-
-    - For non-DDS formats, uses PIL directly and converts to requested 'format' (default RGB).
-    - For .dds, uses texconv.exe to convert to a temporary PNG, then loads it and converts to requested 'format'.
-
-    Args:
-        path (str): Input image path.
-        format (str): Desired PIL mode for the returned image, e.g., 'RGB' or 'RGBA'.
-
-    Returns:
-        PIL.Image.Image: Loaded image in the requested mode.
-
-    Raises:
-        Exception: If texconv is required but not set or conversion fails.
-    """
-    try:
-        ext = os.path.splitext(path)[1].lower()
-        if ext != '.dds':
-            # Use PIL for regular formats
-            with Image.open(path) as im:
-                return im.convert(format)
-
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Run texconv to output PNG into tmpdir
-            # Use -ft PNG to force PNG, single mip (-m 1), sRGB
-            cmd = [
-                TEXCONV_EXE,
-                '-ft', 'PNG',            # Force PNG output
-                '-f', 'RGBA',            # Force 32-bit RGBA to handle BC5/other special formats
-                '-y',
-                '-m', '1',
-                '-srgb',
-                path,
-                '-o', tmpdir
-            ]
-            logger.debug(f"Running texconv for DDS load: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                logger.error(f"texconv failed while reading DDS: {result.stderr}")
-                raise Exception(f"texconv failed while reading DDS: {result.stderr}")
-
-            # texconv outputs a PNG with same basename but .PNG extension
-            base = os.path.splitext(os.path.basename(path))[0]
-            # texconv may output uppercase .PNG; try both cases
-            cand_paths = [
-                os.path.join(tmpdir, base + '.PNG'),
-                os.path.join(tmpdir, base + '.png')
-            ]
-            out_png = next((p for p in cand_paths if os.path.exists(p)), None)
-            if not out_png:
-                # Sometimes texconv may create subfolders; scan tmpdir for first PNG
-                for fn in os.listdir(tmpdir):
-                    if fn.lower().endswith('.png'):
-                        out_png = os.path.join(tmpdir, fn)
-                        break
-            if not out_png:
-                raise Exception("texconv did not produce a PNG output when reading DDS")
-
-            with Image.open(out_png) as im:
-                return im.convert(format)
-    except subprocess.TimeoutExpired:
-        logger.error("texconv timed out while reading DDS")
-        raise Exception("texconv timed out while reading DDS")
-    except Exception as e:
-        logger.error(f"Failed to load image '{path}': {e}")
-        raise
-
-
-def quantize_image(image, method, use_lower_quant=False):
-    """Quantize image using the specified method
-
-    Implements optional two-stage strategy (1): over-quantize per-image to preserve rare colors,
-    leaving global reduction to later steps. Controlled by cfg.ci_advanced_quant.
-    Also biases libimagequant toward quality over speed when available.
-    """
-    info = {'method': method}
-    logger.debug(f"Quantizing with method: {method}")
-
-    # Determine palette sizes
-    final_colors = int(cfg.get(cfg.ci_default_palette_size))
-    use_advanced = bool(cfg.get(cfg.ci_advanced_quant)) if hasattr(cfg, 'ci_advanced_quant') else False
-    # Optional lower-per-image quantization factor (e.g., 0.5 -> 128 when final is 256)
-    try:
-        lower_factor = float(cfg.get(cfg.ci_lower_quant_factor)) if cfg.get(cfg.ci_lower_quant_factor) and use_lower_quant else 1.0
-    except Exception:
-        lower_factor = 1.0
-    lower_factor = 1.0 if lower_factor is None else float(lower_factor)
-
-    if lower_factor < 1.0:
-        # Explicitly quantize per-image to fewer colors than the final palette size
-        intermediate_colors = max(2, int(round(final_colors * lower_factor)))
-        info['intermediate_colors'] = intermediate_colors
-        info['lower_factor'] = lower_factor
-    else:
-        # Over-quantize to preserve rare colors: 2x final, capped (only if not lowering)
-        intermediate_colors = max(final_colors, min(1024, min(256, final_colors * 2))) if use_advanced else final_colors
-        if use_advanced and intermediate_colors != final_colors:
-            info['intermediate_colors'] = intermediate_colors
-
-    try:
-        if method == "median_cut":
-            quantized = image.quantize(colors=intermediate_colors, method=Quantize.MEDIANCUT)
-            info['description'] = "Median Cut - Good color relationships, can be blocky"
-
-        elif method == "max_coverage":
-            quantized = image.quantize(colors=intermediate_colors, method=Quantize.MAXCOVERAGE)
-            info['description'] = "Max Coverage - Maximizes color variety"
-
-        elif method == "fast_octree":
-            quantized = image.quantize(colors=intermediate_colors, method=Quantize.FASTOCTREE)
-            info['description'] = "Fast Octree - Fast, good for photos"
-
-        elif method == "libimagequant":
-            try:
-                # Favor quality over speed by allowing more colors and enabling strong dithering.
-                # Pillow's LIQ wrapper doesn't expose quality/speed knobs; using higher color budget
-                # and Floyd-Steinberg dithering biases toward quality.
-                quantized = imagequant.quantize_pil_image(
-                    image,
-                    dithering_level=0.0,
-                    max_colors=intermediate_colors,
-                    min_quality=75,  # from 0 to 100
-                    max_quality=100,  # from 0 to 100
-                )
-                info['description'] = "LibImageQuant - High quality (favoring quality over speed)"
-            except Exception as e:
-                logger.warning(f"LibImageQuant failed with method {method}: {str(e)}")
-                quantized = image.quantize(colors=intermediate_colors, method=Quantize.MEDIANCUT)
-                info['description'] = "LibImageQuant (fallback to Median Cut)"
-
-        elif method == "kmeans_adaptive":
-            # Use a larger k when advanced enabled so k-means can place centroids on rare colors
-            quantized = image.quantize(colors=intermediate_colors, method=Quantize.FASTOCTREE, kmeans=intermediate_colors)
-            info['description'] = "K-means Adaptive - Adaptive color distribution"
-
-        elif method == "uniform":
-            # For uniform method, ensure we get close to target colors
-            uniform_img = image.convert("P", palette=Palette.ADAPTIVE, colors=intermediate_colors)
-            quantized = uniform_img.convert("RGB").quantize(colors=intermediate_colors)
-            info['description'] = "Uniform - Helps with color banding"
-
-        else:
-            quantized = image.quantize(colors=intermediate_colors, method=Quantize.MEDIANCUT)
-            info['description'] = "Median Cut (default)"
-
-        # Verify we have a reasonable number of colors
-        quantized_rgb = quantized.convert('RGB')
-        quantized_array = np.array(quantized_rgb)
-        unique_colors = np.unique(quantized_array.reshape(-1, 3), axis=0)
-        info['initial_color_count'] = len(unique_colors)
-
-        logger.debug(
-            f"Quantization completed with {method} (advanced={'on' if use_advanced else 'off'}), "
-            f"requested={intermediate_colors}, produced {len(unique_colors)} colors"
-        )
-        return quantized, info
-
-    except Exception as e:
-        logger.error(f"Quantization failed with method {method}: {str(e)}")
-        raise
+from utils.dds_utils import load_image
+from utils.palette_utils import quantize_image, _get_palette_array
 
 
 def pad_colors_to_target(existing_colors, original_image, target_size):
@@ -336,124 +173,6 @@ def analyze_color_distribution(quantized_array):
     distribution = Counter(color_tuples)
     logger.debug(f"Color distribution analyzed: {len(distribution)} unique colors")
     return distribution
-
-
-def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256, palette_height=8):
-    """Convert image to DDS format using texconv.exe.
-
-    Notes:
-    - texconv derives the output filename from the INPUT filename and only lets us pick the output directory via -o.
-      To ensure the final filename matches `output_path`, we rename (move) the produced file to `output_path` after conversion.
-    - On Windows (case-insensitive FS), renaming a file that differs only by letter case (e.g., .DDS → .dds) can fail.
-      We therefore treat paths equal in a case-insensitive way and skip the rename when only case differs.
-    """
-    logger.debug(f"Converting to DDS: {input_path} -> {output_path}")
-    try:
-        out_dir = os.path.dirname(output_path) or '.'
-        os.makedirs(out_dir, exist_ok=True)
-
-        if is_palette:
-            # Use provided palette dimensions
-            cmd = [
-                TEXCONV_EXE,
-                '-f', 'BC7_UNORM',
-                '-y',
-                '-m', '1',
-                '-w', str(palette_width),
-                '-h', str(palette_height),
-                '-srgb',
-                input_path,
-                '-o', out_dir
-            ]
-        else:
-            cmd = [
-                TEXCONV_EXE,
-                '-f', 'BC7_UNORM',
-                '-y',
-                '-m', '1',
-                '-srgb',
-                input_path,
-                '-o', out_dir
-            ]
-
-        logger.debug(f"Running texconv command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            logger.error(f"texconv failed: {result.stderr}")
-            raise Exception(f"texconv failed: {result.stderr}")
-
-        # Determine the file texconv actually wrote (derived from input filename)
-        base = os.path.splitext(os.path.basename(input_path))[0]
-        produced_candidates = [base + '.DDS', base + '.dds']
-        produced_path = None
-        for cand in produced_candidates:
-            p = os.path.join(out_dir, cand)
-            if os.path.exists(p):
-                produced_path = p
-                break
-
-        if not produced_path:
-            # As a last resort, scan for any DDS created in out_dir matching the base name (case-insensitive)
-            try:
-                for f in os.listdir(out_dir):
-                    if f.lower().endswith('.dds') and os.path.splitext(f)[0] == base:
-                        produced_path = os.path.join(out_dir, f)
-                        break
-            except Exception:
-                produced_path = None
-
-        if not produced_path or not os.path.exists(produced_path):
-            raise Exception(f"texconv did not produce expected DDS file for input '{input_path}' in '{out_dir}'")
-
-        # Ensure output extension is .dds
-        desired_out = output_path
-        root, ext = os.path.splitext(desired_out)
-        if ext.lower() != '.dds':
-            desired_out = root + '.dds'
-
-        # If paths refer to the same file ignoring case, skip renaming (Windows case-insensitive FS)
-        produced_norm = os.path.normcase(os.path.abspath(produced_path))
-        desired_norm = os.path.normcase(os.path.abspath(desired_out))
-        if produced_norm == desired_norm:
-            # Nothing to do; file already at desired location/name (ignoring case)
-            logger.debug(f"DDS file written: {produced_path}")
-            return
-
-        # If the produced file already has the correct path/name, nothing to do
-        if os.path.abspath(produced_path) != os.path.abspath(desired_out):
-            # If destination exists and replace is intended, remove it first
-            try:
-                if os.path.exists(desired_out):
-                    os.remove(desired_out)
-            except Exception as remove_ex:
-                logger.warning(f"Failed to remove existing output before rename: {desired_out}: {remove_ex}")
-            # Move/rename atomically
-            try:
-                os.replace(produced_path, desired_out)
-            except FileNotFoundError:
-                # A rare race or case-only rename issue; re-scan and try one more time
-                try:
-                    for f in os.listdir(out_dir):
-                        if f.lower().endswith('.dds') and os.path.splitext(f)[0] == base:
-                            retry_src = os.path.join(out_dir, f)
-                            if os.path.normcase(os.path.abspath(retry_src)) == desired_norm:
-                                # Already at desired (case-insensitive)
-                                logger.debug(f"DDS file written: {retry_src}")
-                                return
-                            os.replace(retry_src, desired_out)
-                            logger.debug(f"DDS file written: {desired_out}")
-                            return
-                except Exception as _:
-                    pass
-                raise
-        logger.debug(f"DDS file written: {desired_out}")
-
-    except subprocess.TimeoutExpired:
-        logger.error("texconv timed out")
-        raise Exception("texconv timed out")
-    except Exception as e:
-        logger.error(f"DDS conversion error: {str(e)}")
-        raise Exception(f"DDS conversion error: {str(e)}")
 
 
 @njit(cache=True, fastmath=True)
@@ -931,11 +650,320 @@ def map_rgb_array_to_palette_indices(arr_rgb: np.ndarray, lut_exact: dict, palet
     return indices.reshape(h, w)
 
 
+def _rgb_to_hsv_vec(rgb_uint8: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Fast vectorized RGB->HSV for arrays of shape (N,3) uint8 in [0,255].
+    Returns H,S,V with H in [0,1), S in [0,1], V in [0,1].
+    """
+    rgb = rgb_uint8.astype(np.float32) / 255.0
+    r = rgb[:, 0]
+    g = rgb[:, 1]
+    b = rgb[:, 2]
+    maxc = np.maximum(np.maximum(r, g), b)
+    minc = np.minimum(np.minimum(r, g), b)
+    v = maxc
+    diff = maxc - minc
+    # Saturation
+    s = np.zeros_like(v)
+    nonzero = maxc > 0
+    s[nonzero] = diff[nonzero] / maxc[nonzero]
+
+    # Hue
+    h = np.zeros_like(v)
+    nz = diff > 1e-6
+    # Avoid division by zero by only computing where diff>0
+    rc = np.zeros_like(v)
+    gc = np.zeros_like(v)
+    bc = np.zeros_like(v)
+    rc[nz] = (((g - b) / diff) % 6.0)[nz]
+    gc[nz] = (((b - r) / diff) + 2.0)[nz]
+    bc[nz] = (((r - g) / diff) + 4.0)[nz]
+
+    is_r = (maxc == r) & nz
+    is_g = (maxc == g) & nz
+    is_b = (maxc == b) & nz
+    h[is_r] = rc[is_r]
+    h[is_g] = gc[is_g]
+    h[is_b] = bc[is_b]
+    h = (h / 6.0) % 1.0
+    # For grayscale (s≈0) the hue is arbitrary; keep 0
+    return h, s, v
+
+
+def build_coarse_palette_index_map(palette_int16: np.ndarray,
+                                   hue_bins: int = 12,
+                                   levels_per_bin: int = 5,
+                                   min_saturation: float = 0.05) -> np.ndarray:
+    """
+    Build a remapping from fine palette indices to a coarser set by collapsing indices within hue bins
+    down to a limited number of value levels.
+
+    Args:
+        palette_int16: (P,3) int16 palette colors (0..255 values expected).
+        hue_bins: number of hue bins to group colors.
+        levels_per_bin: maximum number of value (brightness) levels preserved per hue bin.
+        min_saturation: colors with saturation below this are treated as neutral (single shared bin).
+
+    Returns:
+        remap: (P,) uint16 array where remap[i] gives the representative index for original index i.
+    """
+    P = int(palette_int16.shape[0])
+    if P == 0 or levels_per_bin <= 0:
+        return np.arange(P, dtype=np.uint16)
+
+    pal_u8 = np.clip(palette_int16, 0, 255).astype(np.uint8, copy=False)
+    h, s, v = _rgb_to_hsv_vec(pal_u8)
+
+    # Assign bins: grayscale/low-sat go to bin hue_bins (extra bin)
+    bins = np.floor(h * hue_bins).astype(np.int32)
+    bins[bins == hue_bins] = hue_bins - 1  # handle h==1 edge
+    grey_bin = hue_bins  # extra bin at the end
+    bins[s < min_saturation] = grey_bin
+
+    # Prepare remap as identity
+    remap = np.arange(P, dtype=np.uint16)
+
+    # Process each bin separately
+    total_bins = hue_bins + 1
+    for bidx in range(total_bins):
+        idxs = np.where(bins == bidx)[0]
+        if idxs.size == 0:
+            continue
+        # Sort indices in this bin by value (brightness), then by saturation to keep more saturated reps
+        order = np.lexsort((-s[idxs], v[idxs]))  # primarily by v ascending, then saturated first within ties
+        sorted_idxs = idxs[order]
+        if sorted_idxs.size <= levels_per_bin:
+            # Nothing to collapse, keep identity
+            continue
+        # Split into equal segments by count and pick representative near the middle of each segment
+        segments = np.array_split(sorted_idxs, levels_per_bin)
+        reps = []
+        for seg in segments:
+            if seg.size == 0:
+                continue
+            # Prefer the most saturated color in the segment to preserve vivid hues (e.g., reds)
+            seg_s = s[seg]
+            # If all saturations are equal (e.g., greys), fall back to mid by index
+            if np.any(seg_s > 0):
+                # Choose the most saturated; if multiple, pick one whose value is closest to the segment's median V
+                max_s = seg_s.max()
+                cand_idx = seg[seg_s >= (max_s - 1e-6)]
+                if cand_idx.size > 1:
+                    seg_v = v[cand_idx]
+                    med_v = np.median(v[seg])
+                    pick = cand_idx[np.argmin(np.abs(seg_v - med_v))]
+                else:
+                    pick = cand_idx[0]
+                reps.append(int(pick))
+            else:
+                # Low-saturation segment: use the middle element (by value order)
+                mid = seg[seg.size // 2]
+                reps.append(int(mid))
+        reps = np.array(reps, dtype=np.int32)
+        # Map every index in the bin to the nearest rep by value distance
+        v_bin = v[sorted_idxs]
+        v_reps = v[reps]
+        # For each element, choose rep with minimum |v - v_rep|
+        # Vectorized via broadcasting in manageable size (bin-only)
+        diff = np.abs(v_bin[:, None] - v_reps[None, :])
+        nearest = np.argmin(diff, axis=1)
+        remap[sorted_idxs] = reps[nearest].astype(np.uint16)
+
+    return remap
+
+
+def map_rgb_array_to_palette_indices_coarse(arr_rgb: np.ndarray,
+                                            lut_exact: dict,
+                                            palette_int16: np.ndarray,
+                                            hue_bins: int = 18,
+                                            levels_per_hue: int = 6,
+                                            min_saturation: float = 0.05) -> np.ndarray:
+    """
+    Alternative mapping that reduces greyscale complexity by collapsing palette indices per hue.
+
+    Steps:
+      1) Use the standard map_rgb_array_to_palette_indices to get fine indices.
+      2) Build a remap that limits the number of distinct indices per hue bin to levels_per_hue
+         (based on HSV value), then apply it to the index image.
+
+    Args:
+        arr_rgb: (H,W,3) uint8 image array.
+        lut_exact: dict of exact RGB->index matches.
+        palette_int16: (P,3) int16 palette used for nearest matching.
+        hue_bins: number of hue groups for collapsing (e.g., 12).
+        levels_per_hue: max distinct greyscale values preserved per hue group (e.g., 5).
+        min_saturation: threshold to treat colors as neutral (grouped together).
+
+    Returns:
+        (H,W) uint16 array of coarsened palette indices.
+    """
+    fine = map_rgb_array_to_palette_indices(arr_rgb, lut_exact, palette_int16)
+    remap = build_coarse_palette_index_map(palette_int16, hue_bins=hue_bins,
+                                           levels_per_bin=levels_per_hue,
+                                           min_saturation=min_saturation)
+    return remap[fine]
+
+
 def perceptual_color_sort(colors):
     if(cfg.get(cfg.ci_use_faster_sort)):
-        return faster_perceptual_color_sort(colors)
+        return lightness_sort(colors)
     else:
         return perceptual_color_sort_updated(colors)
+
+
+def adjacency_aware_color_sort(colors: list | np.ndarray,
+                                quantized_array: np.ndarray,
+                                lambda_de: float = 0.7,
+                                connectivity: int = 8) -> list:
+    """Order colors so that adjacent indices are more likely to be neighbors in the quantized image while
+    still maintaining perceptual smoothness.
+
+    Args:
+        colors: list of RGB tuples or (N,3) array of uint8 unique colors.
+        quantized_array: HxWx3 uint8 array of the quantized source image.
+        lambda_de: blend factor in [0,1]; higher values weight perceptual distance more strongly.
+        connectivity: neighborhood (4 or 8) for adjacency.
+
+    Returns:
+        A list of RGB tuples in computed order.
+    """
+    if colors is None or len(colors) == 0:
+        return []
+    cols = np.array(colors, dtype=np.uint8)
+    K = cols.shape[0]
+    keys = [tuple(int(c) for c in row) for row in cols]
+
+    # Map pixels to color indices using a packed RGB LUT
+    h, w = quantized_array.shape[:2]
+    valid_mask = np.ones((h, w), dtype=np.uint8)
+
+    flat = quantized_array.reshape(-1, 3)
+    packed = (flat[:, 0].astype(np.uint32) << 16) | (flat[:, 1].astype(np.uint32) << 8) | flat[:, 2].astype(np.uint32)
+    lut = {((int(c[0]) << 16) | (int(c[1]) << 8) | int(c[2])): i for i, c in enumerate(cols.tolist())}
+    ids = np.fromiter((lut.get(int(v), -1) for v in packed), dtype=np.int32, count=packed.shape[0]).reshape(h, w)
+
+    # Build symmetric co-occurrence matrix from neighbor pairs
+    co = np.zeros((K, K), dtype=np.float64)
+
+    def add_pair(a, b):
+        if a < 0 or b < 0 or a == b:
+            return
+        co[a, b] += 1.0
+        co[b, a] += 1.0
+
+    if connectivity == 8:
+        neighbors = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    else:
+        neighbors = [(0, 1), (1, 0)]
+
+    vm = valid_mask
+    for y in range(h):
+        for x in range(w):
+            if vm[y, x] == 0:
+                continue
+            a = ids[y, x]
+            if a < 0:
+                continue
+            for dy, dx in neighbors:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < h and 0 <= nx < w and vm[ny, nx] != 0:
+                    b = ids[ny, nx]
+                    add_pair(a, b)
+
+    # Normalize adjacency scores to [0,1]
+    if np.max(co) > 0:
+        A = co / np.max(co)
+    else:
+        # No adjacency info; fall back
+        return perceptual_color_sort(colors)
+
+    # Compute perceptual distances (ΔE00) between colors; normalize to [0,1]
+    labs = rgb2lab(cols.reshape(-1, 1, 3)).reshape(-1, 3)
+    D = np.zeros((K, K), dtype=np.float64)
+    for i in range(K):
+        di = deltaE_ciede2000(labs[i].reshape(1, 1, 3), labs.reshape(-1, 1, 3)).reshape(-1)
+        D[i] = di
+    if np.max(D) > 0:
+        Dn = D / np.max(D)
+    else:
+        Dn = D
+
+    # Greedy path construction with blended cost: cost = λ*Dn + (1-λ)*(1-A)
+    remaining = set(range(K))
+    # Start with lowest L to align with greyscale intuition
+    start = int(np.argmin(labs[:, 0]))
+    order = [start]
+    remaining.remove(start)
+    while remaining:
+        i = order[-1]
+        rem = np.array(sorted(list(remaining)))
+        costs = lambda_de * Dn[i, rem] + (1.0 - lambda_de) * (1.0 - A[i, rem])
+        j = int(rem[int(np.argmin(costs))])
+        order.append(j)
+        remaining.remove(j)
+
+    return [keys[i] for i in order]
+
+def adjacency_from_p_mode(p_img: Image.Image, connectivity=8):
+    """Build adjacency (co-occurrence) matrix from P-mode quantized image."""
+    assert p_img.mode == "P"
+    pal = _get_palette_array(p_img)
+    arr = np.array(p_img)
+    h, w = arr.shape
+    K = len(pal)
+
+    co = np.zeros((K, K), dtype=np.float64)
+
+    if connectivity == 8:
+        neighbors = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    else:
+        neighbors = [(0, 1), (1, 0)]
+
+    for y in range(h):
+        for x in range(w):
+            a = arr[y, x]
+            for dy, dx in neighbors:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < h and 0 <= nx < w:
+                    b = arr[ny, nx]
+                    if a != b:
+                        co[a, b] += 1
+                        co[b, a] += 1
+
+    return co
+
+def adjacency_aware_color_sort_pmode(p_img: Image.Image, lambda_de=0.4):
+    """Sort colors based on spatial adjacency and perceptual similarity."""
+    pal, co = adjacency_from_p_mode(p_img)
+    K = len(pal)
+    labs = rgb2lab(pal.reshape(-1, 1, 3)).reshape(-1, 3)
+
+    # Normalize adjacency (after applying frequency weighting in adjacency_from_p_mode)
+    A = co / np.max(co) if np.max(co) > 0 else co
+
+    # Compute perceptual distances (ΔE00)
+    D = np.zeros((K, K), dtype=np.float64)
+    for i in range(K):
+        D[i] = deltaE_ciede2000(labs[i].reshape(1, 1, 3), labs.reshape(-1, 1, 3)).reshape(-1)
+    Dn = D / np.max(D) if np.max(D) > 0 else D
+
+    # Start with darkest color
+    start = int(np.argmin(labs[:, 0]))
+    remaining = set(range(K))
+    order = [start]
+    remaining.remove(start)
+
+    # Greedy adjacency-perceptual path
+    while remaining:
+        i = order[-1]
+        rem = np.array(sorted(list(remaining)))
+        cost = lambda_de * Dn[i, rem] + (1 - lambda_de) * (1 - A[i, rem])
+        j = int(rem[int(np.argmin(cost))])
+        order.append(j)
+        remaining.remove(j)
+
+    # ✅ Return list of (R,G,B) tuples
+    return [tuple(map(int, pal[i])) for i in order]
 
 
 def old_perceptual_color_sort(colors):
@@ -1031,12 +1059,61 @@ def delta_e_matrix_numba(lab):
             D[i, j] = (dl*dl + da*da + db*db) ** 0.5
     return D
 
+
+def lightness_sort(colors):
+    n = len(colors)
+    if n <= 1:
+        return list(colors)
+
+    lab = rgb_to_lab_array(colors)
+    L, a, b = lab[:, 0], lab[:, 1], lab[:, 2]
+
+    # Calculate hues and handle grayscale gracefully
+    hues = np.zeros_like(L)
+    chromas = np.sqrt(a ** 2 + b ** 2)
+    non_gray = chromas > 0.1  # Avoid hue calculation for near-grayscale
+    hues[non_gray] = np.array([
+        hue_angle_from_ab(ai, bi)
+        for ai, bi in zip(a[non_gray], b[non_gray])
+    ])
+
+    # ALWAYS prioritize lightness for linear gradients
+    initial_order = np.lexsort((hues, L))  # Primary: L*, Secondary: hue
+
+    sorted_colors = [colors[i] for i in initial_order]
+    lab_current = lab[initial_order]
+
+    # Calculate adjacent ΔE for logging (no 2-opt to preserve lightness order)
+    total_de = 0.0
+    max_de = 0.0
+    for i in range(n - 1):
+        dl = lab_current[i, 0] - lab_current[i + 1, 0]
+        da = lab_current[i, 1] - lab_current[i + 1, 1]
+        db = lab_current[i, 2] - lab_current[i + 1, 2]
+        de = math.sqrt(dl * dl + da * da + db * db)
+        total_de += de
+        if de > max_de:
+            max_de = de
+
+    avg_de = total_de / (n - 1) if n > 1 else 0
+    logger.debug(f"Linear gradient sort complete (lightness-primary): {n} colors")
+    logger.debug(f"Total ΔE: {total_de:.3f}, Avg ΔE: {avg_de:.3f}, Max ΔE: {max_de:.3f}")
+
+    return sorted_colors
+
 def perceptual_color_sort_updated(colors):
     n = len(colors)
     if n <= 1:
         return list(colors)
 
     lab = rgb_to_lab_array(colors)
+
+    print("Color analysis:")
+    for i, color in enumerate(colors):
+        l, a, b = lab[i]
+        hue = hue_angle_from_ab(a, b)
+        print(f"Color {i}: RGB{color} -> Lab({l:.1f}, {a:.1f}, {b:.1f}) -> Hue: {hue:.1f}°")
+
     L, a, b = lab[:, 0], lab[:, 1], lab[:, 2]
 
     hues = np.array([hue_angle_from_ab(ai, bi) for ai, bi in zip(a, b)])
@@ -1211,3 +1288,313 @@ def faster_perceptual_color_sort(colors):
     logger.debug(f"Hue range: {start_hue:.1f}° → {end_hue:.1f}°")
 
     return sorted_colors
+
+# === Row-building and composition helpers consolidated for widgets and generator ===
+def extract_existing_palette_rows(path: str, row_height: int, skip_grey_rows: bool = True) -> tuple[list[np.ndarray], int]:
+    """Extract existing non-grey palette rows from a palette image file.
+
+    - Returns (rows, palette_size). Each row is (palette_size, 3) uint8.
+    - If no non-grey rows are detected, returns a single row sampled from the middle.
+    """
+    pil = load_image(path)
+    arr = np.array(pil)
+    h, w = arr.shape[:2]
+    palette_size = w
+    if row_height <= 0:
+        row_height = 1
+    num_blocks = max(1, h // row_height)
+
+    rows: list[np.ndarray] = []
+    for block in range(num_blocks):
+        start_row = block * row_height
+        y = min(start_row, h - 1)
+        row = arr[y, :w, :]
+        if skip_grey_rows:
+            eq = (row[:, 0] == row[:, 1]) & (row[:, 1] == row[:, 2])
+            frac_grey = float(np.mean(eq))
+            if frac_grey >= 0.9:
+                continue
+        rows.append(row[:palette_size].astype(np.uint8))
+
+    if not rows:
+        # Fallback: choose middle row
+        y = h // 2
+        row = arr[y, :w, :]
+        rows = [row[:palette_size].astype(np.uint8)]
+    return rows, palette_size
+
+
+def _positions_by_greyscale_index(greyscale_indices: np.ndarray, palette_size: int) -> dict[int, np.ndarray]:
+    pos = {}
+    for g in range(palette_size):
+        positions = np.argwhere(greyscale_indices == g)
+        pos[g] = positions
+    return pos
+
+
+def _choose_dominant_color(colors_at_positions: np.ndarray) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Return (chosen_color_rgb, values_counts_sorted) where values_counts_sorted is a tuple
+    (values_sorted, counts_sorted). If no colors, returns (None, None)."""
+    if colors_at_positions is None or colors_at_positions.size == 0:
+        return None, None
+    tuples = [tuple(c) for c in colors_at_positions]
+    if not tuples:
+        return None, None
+    values, counts = np.unique(np.array(tuples), axis=0, return_counts=True)
+    order = np.argsort(-counts)
+    values_sorted = values[order]
+    counts_sorted = counts[order]
+    chosen = values_sorted[0]
+    return chosen, (values_sorted, counts_sorted)
+
+
+def build_row_from_arrays(greyscale_indices: np.ndarray,
+                          rgb_array: np.ndarray,
+                          base_row: np.ndarray,
+                          palette_size: int,
+                          log_top_k: int = 3,
+                          context_label: str | None = None) -> np.ndarray:
+    """Build a single palette row by mapping greyscale indices to dominant colors from an RGB array.
+
+    Also logs deviations from base_row using the consolidated format.
+    """
+    height_g, width_g = greyscale_indices.shape
+    # Ensure dimensions match; if not, resize nearest
+    if rgb_array.shape[:2] != (height_g, width_g):
+        try:
+            img = Image.fromarray(rgb_array.astype('uint8'), 'RGB')
+            img = img.resize((width_g, height_g), Image.Resampling.NEAREST)
+            rgb_array = np.array(img)
+        except Exception:
+            pass
+
+    positions_by_g = _positions_by_greyscale_index(greyscale_indices, palette_size)
+
+    row_palette = np.copy(base_row)
+    deviation_count = 0
+
+    for g in range(palette_size):
+        positions = positions_by_g.get(g)
+        if positions is None or positions.size == 0:
+            continue
+        colors = rgb_array[positions[:, 0], positions[:, 1]]
+        chosen, vc = _choose_dominant_color(colors)
+        if chosen is None:
+            continue
+        base_color = row_palette[g]
+
+        # Decide whether to keep original base color if the new dominant color is very close
+        chosen_final = chosen
+        do_log = False
+        de_val = None
+        try:
+            use_orig = bool(cfg.get(cfg.ci_palette_use_original_colors)) if hasattr(cfg, 'ci_palette_use_original_colors') else False
+        except Exception:
+            use_orig = False
+        if use_orig and not np.array_equal(chosen, base_color):
+            try:
+                # Compute ΔE00 between base and chosen
+                cols = np.array([base_color, np.array(chosen, dtype=np.uint8)], dtype=np.uint8)
+                labs = rgb2lab(cols.reshape(-1, 1, 3)).reshape(-1, 3)
+                de_val = float(deltaE_ciede2000(labs[0].reshape(1, 1, 3), labs[1].reshape(1, 1, 3)).reshape(-1)[0])
+            except Exception:
+                de_val = None
+            try:
+                thr = float(cfg.get(cfg.ci_palette_original_max_de)) if hasattr(cfg, 'ci_palette_original_max_de') else 2.0
+            except Exception:
+                thr = 2.0
+            if de_val is not None and de_val <= thr:
+                # Keep the original palette color; do not count as deviation
+                chosen_final = base_color
+                do_log = False
+            else:
+                # Replace and log deviation
+                chosen_final = chosen
+                do_log = True
+        else:
+            # Either using originals is disabled or colors exactly match
+            do_log = not np.array_equal(chosen, base_color)
+
+        if do_log and cfg.get(cfg.ci_extra_logging):
+            deviation_count += 1
+            try:
+                if vc is not None and log_top_k > 0:
+                    values_sorted, counts_sorted = vc
+                    top_k = int(min(log_top_k, len(values_sorted)))
+                    top_entries = [
+                        (values_sorted[j].tolist(), int(counts_sorted[j])) for j in range(top_k)
+                    ]
+                else:
+                    top_entries = []
+                label = f"{context_label}: " if context_label else ""
+                if de_val is not None:
+                    logger.debug(
+                        f"{label}Index {g:3d}: base={base_color.tolist()} -> new={np.array(chosen).tolist()} | "
+                        f"ΔE00={de_val:.2f} | pixels={int(colors.shape[0])} | top={top_entries}"
+                    )
+                else:
+                    logger.debug(
+                        f"{label}Index {g:3d}: base={base_color.tolist()} -> new={np.array(chosen).tolist()} | "
+                        f"pixels={int(colors.shape[0])} | top={top_entries}"
+                    )
+            except Exception:
+                pass
+        row_palette[g] = chosen_final
+
+    try:
+        if context_label:
+            if deviation_count > 0:
+                logger.debug(f"Row summary for {context_label}: deviations={deviation_count} of {palette_size}")
+        else:
+            if deviation_count > 0:
+                logger.debug(f"Row summary: deviations={deviation_count} of {palette_size}")
+
+    except Exception:
+        pass
+
+    return row_palette
+
+
+def build_row_from_pair(greyscale_path: str,
+                        color_path: str,
+                        base_row: np.ndarray,
+                        palette_size: int,
+                        quant_method: QuantAlgorithm,
+                        log_top_k: int = 3) -> np.ndarray:
+    """Load images from disk (greyscale, color), quantize color, and build a palette row.
+    Logs with a header and per-index deviations using consolidated logic.
+    """
+    # Load greyscale indices
+    pil_g = load_image(greyscale_path, format='RGB')
+    arr_g = np.array(pil_g)
+    greyscale_indices = np.clip(arr_g[:, :, 0].astype(np.int32), 0, palette_size - 1)
+
+    # Load+quantize color image
+    pil_img = load_image(color_path, format='RGB')
+    ex_quantized, _ = quantize_image(pil_img, quant_method)
+    ex_quant_rgb = ex_quantized.convert('RGB')
+    arr_rgb = np.array(ex_quant_rgb)
+
+    # Header
+    try:
+        logger.debug(
+            f"Building LUT row: grey={os.path.basename(greyscale_path)}, color={os.path.basename(color_path)}, palette_size={palette_size}"
+        )
+    except Exception:
+        pass
+
+    return build_row_from_arrays(
+        greyscale_indices=greyscale_indices,
+        rgb_array=arr_rgb,
+        base_row=base_row,
+        palette_size=palette_size,
+        log_top_k=log_top_k,
+        context_label=os.path.basename(color_path)
+    )
+
+
+def compose_palette_image(rows: list[np.ndarray], row_height: int, palette_size: int, pad_mode: str = 'none') -> Image.Image:
+    """Compose a palette image from a list of row arrays (each (palette_size,3)).
+
+    pad_mode:
+      - 'none': pad with zeros
+      - 'gradient': fill remaining rows to power-of-two height with a greyscale gradient
+    """
+    existing_rows = rows or []
+    num_blocks = len(existing_rows)
+    required_height = row_height * num_blocks
+    palette_height = int(next_power_of_2(required_height))
+    palette_width = palette_size
+
+    palette_image_array = np.zeros((palette_height, palette_width, 3), dtype=np.uint8)
+    for block_idx, block_array in enumerate(existing_rows):
+        start_row = block_idx * row_height
+        end_row = start_row + row_height
+        for row in range(start_row, end_row):
+            for col in range(palette_width):
+                if col < palette_size:
+                    palette_image_array[row, col] = block_array[col]
+                else:
+                    palette_image_array[row, col] = [0, 0, 0]
+
+    filled_rows = row_height * num_blocks
+    if pad_mode == 'gradient' and filled_rows < palette_height:
+        for row in range(filled_rows, palette_height):
+            for col in range(palette_width):
+                grey_value = int(col * (255 / (palette_width - 1))) if palette_width > 1 else 0
+                palette_image_array[row, col] = [grey_value, grey_value, grey_value]
+
+    return Image.fromarray(palette_image_array.astype('uint8'), 'RGB')
+
+
+def _gaussian_kernel_1d(sigma: float) -> np.ndarray:
+    sigma = float(max(0.0, sigma))
+    if sigma == 0.0:
+        return np.array([1.0], dtype=np.float32)
+    radius = int(np.ceil(3.0 * sigma))
+    x = np.arange(-radius, radius + 1, dtype=np.float32)
+    k = np.exp(-(x * x) / (2.0 * sigma * sigma))
+    k /= np.sum(k)
+    return k.astype(np.float32)
+
+
+def _convolve1d_reflect(arr: np.ndarray, kernel: np.ndarray, axis: int = 0) -> np.ndarray:
+    if arr.ndim == 1:
+        a = arr
+        pad = len(kernel) // 2
+        if pad == 0:
+            return a.copy()
+        a_pad = np.pad(a, (pad, pad), mode='reflect')
+        out = np.convolve(a_pad, kernel[::-1], mode='valid')
+        return out.astype(a.dtype)
+    # Move axis to front
+    arr_move = np.moveaxis(arr, axis, 0)
+    out = np.empty_like(arr_move, dtype=np.float32)
+    pad = len(kernel) // 2
+    for idx in range(arr_move.shape[1] if arr_move.ndim > 1 else 1):
+        # Slice all remaining axes at idx using ... trick
+        line = arr_move[:, idx] if arr_move.ndim > 1 else arr_move
+        line_pad = np.pad(line, (pad, pad), mode='reflect')
+        conv = np.convolve(line_pad.astype(np.float32), kernel[::-1], mode='valid')
+        out[:, idx] = conv.astype(np.float32)
+    out = np.moveaxis(out, 0, axis)
+    return out.astype(arr.dtype)
+
+
+def upscale_and_smooth_lut(sorted_colors: list | np.ndarray, target_size: int = 256, sigma: float = 1.0) -> np.ndarray:
+    """Upscale a color LUT (list/array of RGB) to target_size using linear interpolation per channel
+    followed by light 1D Gaussian smoothing along the LUT axis.
+
+    Args:
+      sorted_colors: sequence of RGB colors (N,3), uint8 preferred.
+      target_size: desired output length (default 256).
+      sigma: Gaussian sigma in color index units (default 1.0). If 0, no smoothing.
+
+    Returns:
+      colors_up: (target_size,3) uint8 array.
+    """
+    if sorted_colors is None:
+        return np.zeros((target_size, 3), dtype=np.uint8)
+    cols = np.array(sorted_colors, dtype=np.float32)
+    if cols.ndim != 2 or cols.shape[1] != 3 or cols.shape[0] == 0:
+        return np.zeros((target_size, 3), dtype=np.uint8)
+    n = int(cols.shape[0])
+    if n == target_size:
+        out = cols.copy()
+    elif n == 1:
+        out = np.tile(cols[0:1], (target_size, 1))
+    else:
+        x_old = np.linspace(0.0, 1.0, n, dtype=np.float32)
+        x_new = np.linspace(0.0, 1.0, int(target_size), dtype=np.float32)
+        out = np.zeros((int(target_size), 3), dtype=np.float32)
+        for c in range(3):
+            out[:, c] = np.interp(x_new, x_old, cols[:, c])
+    # Smoothing
+    sig = float(sigma)
+    if sig > 0.0:
+        k = _gaussian_kernel_1d(sig)
+        # Convolve along axis 0 (over entries), each channel independently
+        for c in range(3):
+            out[:, c] = _convolve1d_reflect(out[:, c], k, axis=0)
+    return np.clip(np.round(out), 0, 255).astype(np.uint8)
+

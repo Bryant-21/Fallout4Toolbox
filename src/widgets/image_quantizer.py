@@ -18,12 +18,14 @@ from qfluentwidgets import (
 
 from help.quantize_help import QuantizeHelp
 from settings.quant_settings import QuantSettings
-from src.palette.palette_engine import load_image, quantize_image, reduce_colors_lab_de00_with_hue_balance, remap_rgb_array_to_representatives
+from src.palette.palette_engine import reduce_colors_lab_de00_with_hue_balance, remap_rgb_array_to_representatives
 from src.utils.appconfig import cfg
+from src.utils.cards import RadioSettingCard
+from src.utils.dds_utils import load_image
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from utils.cards import RadioSettingCard
+from src.utils.palette_utils import quantize_image
 
 
 class ImageQuantizerWidget(BaseWidget):
@@ -54,7 +56,7 @@ class ImageQuantizerWidget(BaseWidget):
             CustomIcons.WIDTH.icon(),
             self.tr("Colors"),
             self.tr("Number of colors to quantize to"),
-            texts=["256", "128", "64", "32"],
+            texts=["256", "128", "64", "32", "16", "8"],
             parent=self
         )
 

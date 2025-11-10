@@ -1,5 +1,6 @@
 import os
 import re
+import traceback
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -15,7 +16,7 @@ from qfluentwidgets import (
     FluentIcon as FIF, PushButton, SwitchSettingCard,
 )
 
-from src.palette.palette_engine import load_image, next_power_of_2, quantize_image, convert_to_dds
+from src.palette.palette_engine import next_power_of_2, build_row_from_pair, compose_palette_image
 from src.settings.palette_settings import PaletteSettings
 from src.utils.appconfig import cfg
 from src.utils.helpers import BaseWidget
@@ -28,9 +29,9 @@ class AddColorsWorker(QThread):
     finished = Signal(object)
     error = Signal(str)
 
-    def __init__(self, base_palette_array: np.ndarray, palette_size: int, pairs: List[Tuple[str, str]], row_height: int):
+    def __init__(self, existing_palette_rows: List[np.ndarray], palette_size: int, pairs: List[Tuple[str, str]], row_height: int):
         super().__init__()
-        self.base_palette_array = base_palette_array
+        self.existing_palette_rows = existing_palette_rows  # list of rows (palette_size, 3)
         self.palette_size = palette_size
         self.pairs = pairs  # List of (greyscale_path, color_path)
         self.row_height = row_height
@@ -45,86 +46,39 @@ class AddColorsWorker(QThread):
     def run(self):
         try:
             total = max(1, len(self.pairs))
-            # combined palette row initialized as unset
-            combined_palette = np.zeros((self.palette_size, 3), dtype=np.uint8)
-            combined_set = np.zeros((self.palette_size,), dtype=bool)
+            # Fallback base row is the first existing row if available; else zeros
+            base_row = self.existing_palette_rows[0] if (self.existing_palette_rows and len(self.existing_palette_rows) > 0) else np.zeros((self.palette_size, 3), dtype=np.uint8)
+
+            new_rows: List[np.ndarray] = []
+
+            quant_method = cfg.get(cfg.ci_default_quant_method)
 
             for i, (greyscale_path, color_path) in enumerate(self.pairs, start=1):
                 try:
-                    greyscale_array = self._load_greyscale_indices(greyscale_path)
-                    height_g, width_g = greyscale_array.shape
-
-                    # precompute positions for each grey index for this greyscale
-                    positions_by_g = {}
-                    for g in range(self.palette_size):
-                        positions = np.argwhere(greyscale_array == g)
-                        positions_by_g[g] = positions
-
-                    # load and quantize the corresponding color image
-                    pil_img = load_image(color_path, format='RGB')
-                    ex_quantized, _ = quantize_image(pil_img, cfg.get(cfg.ci_default_quant_method))
-                    ex_quant_rgb = ex_quantized.convert('RGB')
-                    arr_rgb = np.array(ex_quant_rgb)
-                    if arr_rgb.shape[:2] != (height_g, width_g):
-                        try:
-                            img = Image.fromarray(arr_rgb.astype('uint8'), 'RGB')
-                            img = img.resize((width_g, height_g), Image.Resampling.NEAREST)
-                            arr_rgb = np.array(img)
-                        except Exception:
-                            pass
-
-                    # compute per-index dominant colors for this pair
-                    for g in range(self.palette_size):
-                        if combined_set[g]:
-                            continue  # first wins on shared indices
-                        positions = positions_by_g.get(g)
-                        if positions is None or positions.size == 0:
-                            continue
-                        colors = arr_rgb[positions[:, 0], positions[:, 1]]
-                        if colors.size == 0:
-                            continue
-                        tuples = [tuple(c) for c in colors]
-                        if not tuples:
-                            continue
-                        values, counts = np.unique(np.array(tuples), axis=0, return_counts=True)
-                        idx = int(np.argmax(counts))
-                        combined_palette[g] = values[idx]
-                        combined_set[g] = True
+                    row_palette = build_row_from_pair(
+                        greyscale_path=greyscale_path,
+                        color_path=color_path,
+                        base_row=base_row,
+                        palette_size=self.palette_size,
+                        quant_method=quant_method,
+                        log_top_k=3,
+                    )
+                    new_rows.append(row_palette)
                 finally:
                     self.progress.emit(i, total)
 
-            # fill remaining indices from base palette
-            for g in range(self.palette_size):
-                if not combined_set[g]:
-                    combined_palette[g] = self.base_palette_array[g]
-
-            # compose palette image: base + single combined row
-            num_blocks = 2  # base + combined
-            required_height = self.row_height * num_blocks
-            palette_height = next_power_of_2(required_height)
-            palette_width = self.palette_size
-
-            palette_image_array = np.zeros((palette_height, palette_width, 3), dtype=np.uint8)
-            all_blocks = [self.base_palette_array, combined_palette]
-            for block_idx, block_array in enumerate(all_blocks):
-                start_row = block_idx * self.row_height
-                end_row = start_row + self.row_height
-                for row in range(start_row, end_row):
-                    for col in range(palette_width):
-                        if col < self.palette_size:
-                            palette_image_array[row, col] = block_array[col]
-                        else:
-                            palette_image_array[row, col] = [0, 0, 0]
-            # fill remaining rows with grey pattern
-            filled_rows = self.row_height * num_blocks
-            if filled_rows < palette_height:
-                for row in range(filled_rows, palette_height):
-                    for col in range(palette_width):
-                        grey_value = int(col * (255 / (palette_width - 1))) if palette_width > 1 else 0
-                        palette_image_array[row, col] = [grey_value, grey_value, grey_value]
-            out_image = Image.fromarray(palette_image_array.astype('uint8'), 'RGB')
-            self.finished.emit(out_image)
+            # compose palette image: keep all existing rows and append all new rows in order
+            all_blocks = (self.existing_palette_rows or []) + new_rows
+            palette_img = compose_palette_image(
+                rows=all_blocks,
+                row_height=self.row_height,
+                palette_size=self.palette_size,
+                pad_mode='none'
+            )
+            self.finished.emit(palette_img)
+            return
         except Exception as e:
+            traceback.print_exc()
             self.error.emit(str(e))
 
 
@@ -150,7 +104,7 @@ class AddColorsToPaletteWidget(BaseWidget):
         self.output_dir: Optional[str] = cfg.get(cfg.convert_output_dir_cfg)
 
         # data
-        self.base_palette_array: Optional[np.ndarray] = None  # (palette_size, 3)
+        self.existing_palette_rows: Optional[List[np.ndarray]] = None  # list of palette rows, each shape (palette_size, 3)
         self.palette_size: int = 256
         self.greyscale_array: Optional[np.ndarray] = None  # indices 0..palette_size-1
         self.generated_palette_image: Optional[Image.Image] = None
@@ -175,7 +129,7 @@ class AddColorsToPaletteWidget(BaseWidget):
         self.greyscale_card.clicked.connect(self._on_pick_greyscale)
 
         self.textures_card = PushSettingCard(
-            self.tr("Choose Source Texture(s) ..."),
+            self.tr("Add Source Texture(s) ..."),
             CustomIcons.IMAGEADD.icon(stroke=True),
             self.tr("Pick textures that MATCH the Greyscale. (eg: greyscale is receiver, this should be receiver just recolored)"),
             ", ".join(self.texture_paths) if self.texture_paths else "",
@@ -254,7 +208,7 @@ class AddColorsToPaletteWidget(BaseWidget):
             cfg.set(cfg.base_palette_cfg, file)
             self.palette_card.setContent(file)
             try:
-                self.base_palette_array, self.palette_size = self._extract_base_palette(file)
+                self.existing_palette_rows, self.palette_size = self._extract_existing_palette_rows(file)
             except Exception as e:
                 logger.error(f"Failed to parse palette: {e}")
                 QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to parse palette texture."))
@@ -279,8 +233,16 @@ class AddColorsToPaletteWidget(BaseWidget):
                                                 "",
                                                 "Images (*.png *.jpg *.jpeg *.dds)")
         if files:
-            self.texture_paths = files
-            self.textures_card.setContent(", ".join(files))
+            # Append to existing selection with case-insensitive de-duplication, preserving prior order
+            existing = list(self.texture_paths or [])
+            seen = {p.lower() for p in existing}
+            for p in files:
+                key = p.lower()
+                if key not in seen:
+                    existing.append(p)
+                    seen.add(key)
+            self.texture_paths = existing
+            self.textures_card.setContent(", ".join(self.texture_paths))
 
     def _on_pick_output(self):
         dir_ = QFileDialog.getExistingDirectory(self, self.tr("Select Output Folder"), self.output_dir or "")
@@ -306,7 +268,7 @@ class AddColorsToPaletteWidget(BaseWidget):
     # endregion
 
     def _on_build(self):
-        if not self.palette_path or self.base_palette_array is None:
+        if not self.palette_path or not self.existing_palette_rows:
             QMessageBox.warning(self, self.tr("Missing"), self.tr("Please select a palette texture first."))
             return
         if not self.greyscale_paths:
@@ -315,10 +277,14 @@ class AddColorsToPaletteWidget(BaseWidget):
         if not self.texture_paths:
             QMessageBox.warning(self, self.tr("Missing"), self.tr("Please select the color texture(s) to sample from."))
             return
-        # enforce 1:1 pairing count
-        if len(self.greyscale_paths) != len(self.texture_paths):
-            QMessageBox.critical(self, self.tr("Pairing error"), self.tr("Greyscale and Color selections must be 1:1 (same count)."))
-            return
+
+        # Ensure texture paths are deterministically sorted before processing
+        try:
+            self.texture_paths = self._sort_texture_paths(self.texture_paths)
+            # Refresh UI content to reflect sorted order
+            self.textures_card.setContent(", ".join(self.texture_paths))
+        except Exception as _sort_ex:
+            logger.warning(f"Failed to sort texture paths before processing: {_sort_ex}")
 
         # Build pairs using filename matching
         try:
@@ -331,6 +297,14 @@ class AddColorsToPaletteWidget(BaseWidget):
             QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to pair greyscale and color images. See log."))
             return
 
+        # Inform about any greyscales that didn't find a matching color texture
+        try:
+            unmatched = getattr(self, '_last_unmatched_greys', [])
+            if unmatched:
+                QMessageBox.information(self, self.tr("Unmatched greyscale(s)"), self.tr("These greyscale images had no matching color textures and were skipped: ") + ", ".join(unmatched))
+        except Exception:
+            pass
+
         # Show parent mask progress
         p = getattr(self, 'parent', None)
         if p and hasattr(p, 'show_progress'):
@@ -342,7 +316,7 @@ class AddColorsToPaletteWidget(BaseWidget):
             self.btn_save.setEnabled(False)
             row_height = int(cfg.get(cfg.ci_palette_row_height))
             self._worker = AddColorsWorker(
-                base_palette_array=self.base_palette_array,
+                existing_palette_rows=self.existing_palette_rows or [],
                 palette_size=self.palette_size,
                 pairs=pairs,
                 row_height=row_height,
@@ -462,6 +436,8 @@ class AddColorsToPaletteWidget(BaseWidget):
                     self.generated_palette_image.save(out_path)
                     logger.info("Replaced existing PNG palette successfully.")
                 QMessageBox.information(self, self.tr("Saved"), self.tr(f"Saved: {out_path}"))
+                # Reload the palette after saving in case it changed
+                self._reload_palette(out_path)
             except Exception as e:
                 logger.error(f"Failed to replace existing palette: {e}")
                 QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to save palette image."))
@@ -504,51 +480,94 @@ class AddColorsToPaletteWidget(BaseWidget):
             QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to save palette image."))
 
     # helpers
+    def _reload_palette(self, path: str):
+        """Reload the current palette from the given path and refresh internal state/UI."""
+        try:
+            self.palette_path = path
+            cfg.set(cfg.base_palette_cfg, path)
+            self.palette_card.setContent(path)
+            self.existing_palette_rows, self.palette_size = self._extract_existing_palette_rows(path)
+            logger.info(f"Reloaded base palette from: {path}")
+        except Exception as e:
+            logger.error(f"Failed to reload palette from {path}: {e}")
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("Palette was saved, but failed to reload updated palette for preview/next run."))
+
     def _normalize_base_name(self, path: str) -> str:
         """Normalize filename to base key used for pairing.
         Removes suffixes like _greyscale/_grayscale/_grey/_gray/_bw/_mask at the end.
         Case-insensitive. Returns lowercase base name without extension.
+        Keeps underscores to support names that rely on them for matching.
         """
         name = os.path.splitext(os.path.basename(path))[0]
         base = name.lower()
         # strip common greyscale suffix patterns possibly repeated
         base = re.sub(r'(?:[\s_\-]?(?:greyscale|grayscale|grey|gray|bw|mask))+$', '', base, flags=re.IGNORECASE)
-        # remove all non-alphanumeric to normalize naming like image1 vs image_1
-        base = re.sub(r"[^a-z0-9]+", "", base)
+        # remove all non-alphanumeric EXCEPT underscore to preserve keys with underscores
+        base = re.sub(r"[^a-z0-9_]+", "", base)
         return base
 
-    def _pair_greyscale_and_textures(self, greys: List[str], colors: List[str]) -> List[Tuple[str, str]]:
-        """Pair greyscale and color images by normalized base name.
-        Enforces 1:1 counts and first-wins policy is handled in the worker when merging.
-        Raises ValueError with a helpful message if pairing fails.
+    def _sort_texture_paths(self, paths: List[str]) -> List[str]:
+        """Return a new list of texture paths sorted deterministically using the same
+        logic as pairing: base file name, then parent directory, then full path (all case-insensitive).
         """
-        if len(greys) != len(colors):
-            raise ValueError(self.tr("Greyscale and Color selections must be 1:1 (same count)."))
+        try:
+            def _key(p: str):
+                base_name = os.path.splitext(os.path.basename(p))[0].lower()
+                parent_dir = os.path.basename(os.path.dirname(p)).lower()
+                return (base_name, parent_dir, p.lower())
+            return sorted(paths or [], key=_key)
+        except Exception as e:
+            logger.warning(f"Failed to sort texture paths: {e}")
+            return list(paths or [])
 
-        # Map colors by normalized name (ensure uniqueness)
-        color_map = {}
-        dup_colors = []
-        for c in colors:
-            key = self._normalize_base_name(c)
-            if key in color_map:
-                dup_colors.append(os.path.basename(c))
-            else:
-                color_map[key] = c
-        if dup_colors:
-            raise ValueError(self.tr("Duplicate color names after normalization: ") + ", ".join(dup_colors))
+    def _pair_greyscale_and_textures(self, greys: List[str], colors: List[str]) -> List[Tuple[str, str]]:
+        """Build a flat list of (greyscale, color) pairs for 1:many processing.
+        For each greyscale G, find all color textures whose normalized base equals G's normalized base,
+        process them in deterministic order, and append one output row per (G, C) pair.
+        - Greyscales are processed in deterministic order (by normalized base, then filename parent dir, then full path).
+        - Within each G group, colors are processed in deterministic order (file base → parent dir → full path).
+        - If some greyscales have no matching colors, they are skipped; an informational message can be shown by caller.
+        - If no pairs are formed at all, a ValueError is raised.
+        """
+        # Pre-sort greys and colors deterministically
+        def _g_key(p: str):
+            norm = self._normalize_base_name(p)
+            parent_dir = os.path.basename(os.path.dirname(p)).lower()
+            return (norm, parent_dir, p.lower())
+
+        def _c_key(p: str):
+            base_name = os.path.splitext(os.path.basename(p))[0].lower()
+            parent_dir = os.path.basename(os.path.dirname(p)).lower()
+            return (base_name, parent_dir, p.lower())
+
+        greys_sorted = sorted(greys or [], key=_g_key)
+        colors_sorted = sorted(colors or [], key=_c_key)
+
+        # Build mapping from normalized base -> list of colors (in sorted order)
+        colors_by_key = {}
+        for c in colors_sorted:
+            k = self._normalize_base_name(c)
+            colors_by_key.setdefault(k, []).append(c)
 
         pairs: List[Tuple[str, str]] = []
-        missing = []
-        for g in greys:
-            key = self._normalize_base_name(g)
-            c = color_map.get(key)
-            if not c:
-                missing.append(os.path.basename(g))
-            else:
+        unmatched: List[str] = []
+        for g in greys_sorted:
+            k = self._normalize_base_name(g)
+            matches = colors_by_key.get(k, [])
+            if not matches:
+                unmatched.append(os.path.basename(g))
+                continue
+            for c in matches:
                 pairs.append((g, c))
-        if missing:
-            raise ValueError(self.tr("No matching color for greyscale(s): ") + ", ".join(missing))
 
+        # expose unmatched for UI feedback
+        try:
+            self._last_unmatched_greys = unmatched
+        except Exception:
+            pass
+
+        if not pairs:
+            raise ValueError(self.tr("No matching color textures were found for the selected greyscale(s)."))
         return pairs
 
     def _extract_base_palette(self, path: str) -> tuple[np.ndarray, int]:
@@ -574,6 +593,43 @@ class AddColorsToPaletteWidget(BaseWidget):
         palette_size = w
         base_palette = colors[:palette_size].astype(np.uint8)
         return base_palette, palette_size
+
+    def _extract_existing_palette_rows(self, path: str) -> tuple[List[np.ndarray], int]:
+        """Parse ALL existing palette rows from an existing palette texture and return them in order.
+        We identify logical palette rows by chunking the image height by configured row_height and
+        selecting a representative scanline per chunk. Rows that look like greyscale filler are omitted.
+        """
+        pil = load_image(path, format='RGB')
+        arr = np.array(pil)
+        h, w = arr.shape[:2]
+        palette_size = w
+        try:
+            row_height = int(cfg.get(cfg.ci_palette_row_height))
+            if row_height <= 0:
+                row_height = 1
+        except Exception:
+            row_height = 1
+        num_blocks = max(1, h // row_height)
+
+        rows: List[np.ndarray] = []
+        for block in range(num_blocks):
+            start_row = block * row_height
+            # choose the first line of the block as representative
+            y = min(start_row, h - 1)
+            row = arr[y, :w, :]
+            eq = (row[:, 0] == row[:, 1]) & (row[:, 1] == row[:, 2])
+            frac_grey = float(np.mean(eq))
+            # Treat rows that are predominantly greyscale as filler and skip them
+            if frac_grey >= 0.9:
+                continue
+            rows.append(row[:palette_size].astype(np.uint8))
+
+        # Fallback: if nothing detected (e.g., single-row palette), pick a best-guess row using legacy logic
+        if not rows:
+            base_row, _ = self._extract_base_palette(path)
+            rows = [base_row]
+
+        return rows, palette_size
 
     def _load_greyscale_indices(self, path: str) -> np.ndarray:
         """Load greyscale image and return 2D array of indices 0..palette_size-1 using the red channel."""

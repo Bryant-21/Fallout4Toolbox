@@ -14,13 +14,13 @@ from qfluentwidgets import (
 
 from help.upscaler_help import UpscalerHelp
 from settings.basic_settings import BasicSettings
-from src.palette.palette_engine import load_image
 from src.utils.appconfig import cfg
 from src.utils.chainner_utils import CHAINNER_EXE, run_chainner, resolve_model_path, get_or_download_model, upscale_directory_two_pass
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from utils.cards import ComboBoxSettingsCard
+from src.utils.cards import ComboBoxSettingsCard
+from src.utils.dds_utils import load_image
 
 
 class UpscaleWorker(QThread):
@@ -253,7 +253,7 @@ class UpscaleWidget(BaseWidget):
             return
         self.current_preview_file = file
         try:
-            pil = load_image(file, format='RGBA')
+            pil = load_image(file)
             self._display_on_label(pil, self.original_label)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load image: {e}")

@@ -59,8 +59,8 @@ class Config(QConfig):
                                                      default=QuantAlgorithm.libimagequant,
                                                      validator=OptionsValidator(QuantAlgorithm),
                                                      serializer=EnumSerializer(QuantAlgorithm))
-    ci_default_palette_size = OptionsConfigItem("palette", "default_palette_size", 256,
-                                                 OptionsValidator([256, 128, 64, 32]))
+    ci_default_palette_size = OptionsConfigItem("palette", "default_palette_size", 64,
+                                                 OptionsValidator([256, 128, 64, 32, 16, 8]))
     ci_default_working_res = OptionsConfigItem("palette", "default_working_resolution",
                                                     default=ResType.Original,
                                                     validator=OptionsValidator(ResType),
@@ -78,6 +78,24 @@ class Config(QConfig):
     ci_use_faster_sort = ConfigItem("palette", "faster_color_sort", True, BoolValidator())
     ci_replace_existing = ConfigItem("palette", "replace_existing", False, BoolValidator())
     ci_single_palette = ConfigItem("palette", "single_palette", True, BoolValidator())
+    ci_palette_use_original_colors = ConfigItem("palette", "palette_use_original_colors", True, BoolValidator())
+    ci_palette_original_max_de = RangeConfigItem("palette", "palette_original_max_de", 2.0, RangeValidator(0.0, 20.0))
+    ci_extra_logging = ConfigItem("palette", "extra_logging", False, BoolValidator())
+    # Greyscale post-processing
+    ci_greyscale_post_enable = ConfigItem("palette", "greyscale_post_enable", False, BoolValidator())
+    ci_greyscale_post_method = OptionsConfigItem(
+        "palette", "greyscale_post_method", "median",
+        OptionsValidator(["none", "median", "gaussian", "dither", "median_dither", "gaussian_dither"]))
+    ci_greyscale_median_size = RangeConfigItem("palette", "greyscale_median_size", 3, RangeValidator(1, 9))
+    ci_greyscale_blur_radius = RangeConfigItem("palette", "greyscale_blur_radius", 6, RangeValidator(1, 30))
+    ci_greyscale_dither_amount = RangeConfigItem("palette", "greyscale_dither_amount", 2, RangeValidator(0, 100))
+    ci_greyscale_post_apply_to_textures = ConfigItem("palette", "greyscale_post_apply_to_textures", False, BoolValidator())
+    ci_quantize_post_enable = ConfigItem("palette", "quantize_post_enable", True, BoolValidator())
+    # Palette upscaling
+    ci_palette_upscale_to_256 = ConfigItem("palette", "palette_upscale_to_256", False, BoolValidator())
+    ci_palette_upscale_sigma = RangeConfigItem("palette", "palette_upscale_sigma", 10, RangeValidator(0, 100))
+    # Quantized image dithering
+    ci_quantize_dither_enable = ConfigItem("palette", "quantize_dither_enable", False, BoolValidator())
 
     #theme
     themeColor = ColorConfigItem("QFluentWidgets", "ThemeColor", '#ffa11d', restart=True)
@@ -95,6 +113,13 @@ class Config(QConfig):
     tex_wrinkles_cfg = ConfigItem("material", "tex_wrinkles", False, BoolValidator())
     bgsm_cfg = ConfigItem("material", "bgsm", True, BoolValidator())
     bgem_cfg = ConfigItem("material", "bgem", False, BoolValidator())
+    input_dir = ConfigItem("material", "input_dir", "")
+    output_root = ConfigItem("material", "output_root", "")
+    folders_cfg = ConfigItem("material", "folders", "")
+    excludes_cfg = ConfigItem("material", "excludes", "")
+    grayscale_to_palette_scale_cfg = RangeConfigItem("material", "grayscale_to_palette_scale", 0.0, RangeValidator(0.0, 10.0))
+    clean_output_cfg = ConfigItem("material", "clean_output", False, BoolValidator())
+
 
     #esp_renamer
     author_cfg = ConfigItem("esp_renamer", "author", "")

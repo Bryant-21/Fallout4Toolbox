@@ -5,8 +5,8 @@ from typing import Optional, List, Tuple
 from PIL import ImageChops, Image, ImageDraw
 from io_scene_nifly.pynifly import NifFile
 from pathlib import Path
-from palette.palette_engine import load_image
 from src.utils.logging_utils import logger
+from src.utils.dds_utils import load_image
 
 # Ensure the Nifly DLL is loaded before using NifFile (works in dev and PyInstaller)
 try:
@@ -172,7 +172,7 @@ def remove_padding_from_texture_using_nif_uv(tex_path: Path, data_root: Path, wr
 
 
     # Load texture (RGBA)
-    img = load_image(str(tex_path), 'RGBA')
+    img = load_image(str(tex_path))
     w, h = img.size
 
     nif_path = try_find_nif_for_texture(tex_path, data_root)

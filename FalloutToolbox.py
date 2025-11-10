@@ -56,13 +56,15 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         from src.widgets.matfiles_copy import MaterialToolUI
         from src.settings.settings_widget import MainSettings
         from src.widgets.subgraph_maker import SubGraphMakerWindow
-        from src.widgets.bulk_palette_generator import BulkPaletteWidget
+        # from src.widgets.bulk_palette_generator import BulkPaletteWidget
         from src.widgets.image_quantizer import ImageQuantizerWidget
         from src.widgets.combine_palettes import CombinePaletteGroupsWidget
         from src.widgets.bulk_nif_edit import UVPaddingRemoverWidget
         from src.widgets.nif_edit import SingleModelUVPadWidget
-        from src.widgets.texture_to_greyscale import ConvertToPaletteWidget
+        # from src.widgets.texture_to_greyscale import ConvertToPaletteWidget
         from src.widgets.add_colors_to_palette import AddColorsToPaletteWidget
+        from src.widgets.add_colors_to_single_palette import AddColorsToSinglePaletteWidget
+        from src.widgets.palette_applier import PaletteApplier
 
         self.addSubInterface(DDSResizerWindow(self, "DDS Bulk Resizer"), CustomIcons.BULK.icon(), "DDS Bulk Resizer",
                              NavigationItemPosition.TOP)
@@ -80,14 +82,18 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         self.navigationInterface.addSeparator()
         self.addSubInterface(PaletteGenerator(self, "Palette Generator"), CustomIcons.PALETTE.icon(),
                              "Palette Generator", NavigationItemPosition.TOP)
-        self.addSubInterface(ConvertToPaletteWidget(self, "Greyscale Creator"), CustomIcons.GREYSCALE.icon(),
-                             "Greyscale Creator", NavigationItemPosition.TOP)
-        self.addSubInterface(AddColorsToPaletteWidget(self, "Add Colors To Palette"), CustomIcons.ADD_SOLID.icon(stroke=True),
+        # self.addSubInterface(ConvertToPaletteWidget(self, "Greyscale Creator"), CustomIcons.GREYSCALE.icon(),
+        #                      "Greyscale Creator", NavigationItemPosition.TOP)
+        self.addSubInterface(PaletteApplier(self, "Palette Preview"), FIF.SEARCH,
+                             "Palette Preview", NavigationItemPosition.TOP)
+        self.addSubInterface(AddColorsToSinglePaletteWidget(self, "Auto Add to Palette"), CustomIcons.ADD_SOLID.icon(stroke=True),
+                             "Auto Add to Palette", NavigationItemPosition.TOP)
+        self.addSubInterface(AddColorsToPaletteWidget(self, "Add Colors To Palette"), CustomIcons.ADD_BASIC.icon(),
                              "Add Colors To Palette", NavigationItemPosition.TOP)
         self.addSubInterface(CombinePaletteGroupsWidget(self, "Palette Group Combiner (WIP)"),
                              CustomIcons.COMBINE.icon(), "Palette Group Combiner (WIP)", NavigationItemPosition.TOP)
-        self.addSubInterface(BulkPaletteWidget(self, "Texture Set Palette Generator (WIP)"), CustomIcons.SWATCH.icon(),
-                             "Texture Set Palette Generator (WIP)", NavigationItemPosition.TOP)
+        # self.addSubInterface(BulkPaletteWidget(self, "Texture Set Palette Generator (WIP)"), CustomIcons.SWATCH.icon(),
+        #                      "Texture Set Palette Generator (WIP)", NavigationItemPosition.TOP)
         self.navigationInterface.addSeparator()
         self.addSubInterface(ImageQuantizerWidget(self, "Image Quantizer"), CustomIcons.QUANT.icon(), "Image Quantizer",
                              NavigationItemPosition.TOP)

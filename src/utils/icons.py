@@ -91,6 +91,7 @@ class CustomIcons(FluentIconBase, Enum):
     FLOOD = "flood"
     INFINITY = "infinity"
     ADD_SOLID = "add-solid"
+    ADD_BASIC = "add-basic"
     CUT_FILM = "cut-film"
     ARROW_UP = "arrow-up"
     FOLDER_IMAGE = "folder-image"

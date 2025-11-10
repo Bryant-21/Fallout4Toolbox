@@ -18,7 +18,6 @@ from qfluentwidgets import (
 
 from help.convertpalette_help import PaletteConvertHelp
 from settings.palette_settings import PaletteSettings
-from src.palette.palette_engine import load_image, convert_to_dds
 from src.utils.helpers import BaseWidget
 from src.utils.logging_utils import logger
 from src.utils.appconfig import cfg

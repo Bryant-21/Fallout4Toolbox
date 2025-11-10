@@ -1,10 +1,10 @@
 import json
 import os
-from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtCore import Signal
@@ -19,111 +19,59 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton, SegmentedWidget
 )
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.help.palette_help import PaletteHelp
-from src.palette.palette_engine import perceptual_color_sort, quantize_image, next_power_of_2, \
-    analyze_color_distribution, convert_to_dds, pad_colors_to_target, rebuild_image_with_padded_colors, load_image, \
-    reduce_colors_lab_de00_with_hue_balance, remap_rgb_array_to_representatives, map_rgb_array_to_palette_indices
+from src.palette.palette_engine import perceptual_color_sort, adjacency_aware_color_sort, analyze_color_distribution, \
+    map_rgb_array_to_palette_indices, \
+    build_row_from_arrays, compose_palette_image, upscale_and_smooth_lut, \
+    adjacency_from_p_mode, adjacency_aware_color_sort_pmode, map_rgb_array_to_palette_indices_coarse
 from src.settings.palette_settings import PaletteSettings
 from src.utils.appconfig import cfg
+from src.utils.dds_utils import save_image, load_image
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
+from utils.filesystem_utils import get_app_root
+from utils.palette_utils import quantize_image, apply_palette_to_greyscale, _get_palette_array, apply_smooth_dither
 
 
 class SinglePaletteGenerationWorker(QThread):
     """Worker thread for generating a perfect Palette for a single image"""
     progress_updated = Signal(int, str)
-    result_ready = Signal(dict)
     error_occurred = Signal(str)
     step_complete = Signal(str, object)  # step_name, result_data
 
-    def __init__(self, image_path, output_dir,
-                 generate_dds=False, step=None,
-                 previous_data=None,
-                 extra_image_paths=None, working_resolution=None,
-                 produce_color_report=False, produce_metadata_json=False,
+    def __init__(self, parent, image_path, output_dir,
+                 extra_image_paths=None,
+                 working_resolution=None,
+                 produce_color_report=False,
                  greyscale_texture_paths=None,
                  palette_row_height=4):
         super().__init__()
+        self.parent = parent
         self.image_path = image_path
         self.output_dir = output_dir
-        self.generate_dds = generate_dds
-        self.step = step  # Specific step to run: 'quantize', 'greyscale', 'palette', 'all'
-        self.previous_data = previous_data or {}  # Data from previous steps
+        # previous_data is deprecated; all intermediates are local to run()
         self.extra_image_paths = extra_image_paths or []
         self.working_resolution = working_resolution  # None for Original, else max side target (e.g., 4096)
         self.produce_color_report = produce_color_report
-        self.produce_metadata_json = produce_metadata_json
         self.greyscale_texture_paths = greyscale_texture_paths or []
         self.palette_row_height = palette_row_height
         # sRGB compensation removed from UI/logic; keep attribute for backward-compatibility in save paths
         self.srgb_compensation = False
 
-        logger.debug(
-            f"Worker initialized: step={step}, method={cfg.get(cfg.ci_default_quant_method)}, palette_size={cfg.get(cfg.ci_default_palette_size)}, image={image_path}, extras={len(self.extra_image_paths)}, gs_tex={len(self.greyscale_texture_paths)}, work_res={working_resolution}, report={self.produce_color_report}, meta={self.produce_metadata_json}")
 
     def run(self):
+        """Run the full Palette generation pipeline in one go, in a single method.
+        This fully inlines the previous step-based logic to satisfy the requirement that
+        all steps are executed inside one method without delegating to sub-steps.
+        """
         try:
-            logger.debug(f"Starting Palette generation step: {self.step}")
+            logger.debug("Starting Palette generation (single-pass pipeline, fully inlined)")
 
-            if self.step == 'quantize' or self.step == 'all':
-                results = self.run_quantization_step()
-                if self.step == 'quantize':
-                    self.step_complete.emit('quantize', results)
-                    return
-                # Store for next steps
-                self.previous_data['quantize'] = results
-
-            if self.step == 'greyscale' or self.step == 'all':
-                # Use quantized data from previous step if available
-                if 'quantize' in self.previous_data:
-                    quantize_data = self.previous_data['quantize']
-                    # Use the data directly without setting instance attributes
-                    results = self.run_greyscale_step(quantize_data)
-                else:
-                    # No previous data available
-                    self.error_occurred.emit(
-                        "No quantized data available for greyscale step. Please run quantization first.")
-                    return
-
-                if self.step == 'greyscale':
-                    self.step_complete.emit('greyscale', results)
-                    return
-                # Store for next steps
-                self.previous_data['greyscale'] = results
-
-            if self.step == 'palette' or self.step == 'all':
-                # Use greyscale data from previous step if available
-                if 'greyscale' in self.previous_data:
-                    greyscale_data = self.previous_data['greyscale']
-                    quantize_data = self.previous_data.get('quantize', {})
-                    results = self.run_palette_step(greyscale_data, quantize_data)
-                else:
-                    # No previous data available
-                    self.error_occurred.emit(
-                        "No greyscale data available for Palette step. Please run previous steps first.")
-                    return
-
-                if self.step == 'palette':
-                    self.step_complete.emit('palette', results)
-                    return
-                # Store for next steps
-                self.previous_data['palette'] = results
-
-            # If running all steps, save everything
-            if self.step == 'all':
-                self.save_all_results()
-
-        except Exception as e:
-            logger.error(f"Error in Palette generation: {str(e)}", exc_info=True)
-            self.error_occurred.emit(str(e))
-
-    def run_quantization_step(self):
-        """Run only the quantization step"""
-        try:
-            logger.debug("Starting quantization step")
+            # =====================
+            # 1) QUANTIZATION STEP
+            # =====================
             self.progress_updated.emit(10, "Loading image...")
 
             def downscale_keep_aspect(img, max_side):
@@ -138,6 +86,7 @@ class SinglePaletteGenerationWorker(QThread):
                 new_h = max(1, int(round(h * scale)))
                 return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
+            palette_size = cfg.get(cfg.ci_default_palette_size)
             img = load_image(self.image_path)
             base_original_img = img
             base_orig_w, base_orig_h = base_original_img.size
@@ -155,79 +104,19 @@ class SinglePaletteGenerationWorker(QThread):
             self.progress_updated.emit(30, f"Quantizing using {cfg.get(cfg.ci_default_quant_method)}...")
 
             # Quantize to exactly Palette_SIZE colors using selected method
-            quantized, quantization_info = quantize_image(original_img, cfg.get(cfg.ci_default_quant_method))
-            quantized_rgb = quantized.convert('RGB')
-            quantized_array = np.array(quantized_rgb)
+            # quantize_image now returns a P-mode image; use its palette directly
+            quantized = quantize_image(original_img, cfg.get(cfg.ci_default_quant_method))
+            # Work with palette indices and palette colors (avoid early RGB convert)
+            quantized_indices = np.array(quantized, dtype=np.uint8)
+            palette_colors = _get_palette_array(quantized)
+            # For algorithms that expect RGB arrays, materialize an RGB view via palette lookup
+            quantized_array = palette_colors[quantized_indices]
+            logger.debug(f"Quantization complete: {palette_colors} unique colors")
 
-            # Get the unique colors from quantized image (and their counts)
-            flat = quantized_array.reshape(-1, 3)
-            unique_colors, counts = np.unique(flat, axis=0, return_counts=True)
-            num_colors = len(unique_colors)
-
-            logger.debug(f"Quantization complete: {num_colors} unique colors")
-
-            target_size = int(cfg.get(cfg.ci_default_palette_size))
-            # Determine the actual target we will use for padding/trimming
-            # New behavior: when under target_size, pad to the closest power-of-two >= actual count
-
-            # If we have more than target_size colors, reduce using LAB/ΔE00 with hue balancing
-            if num_colors > target_size:
-                self.progress_updated.emit(60, f"Reducing {num_colors}→{target_size} with LAB/ΔE00 + hue balancing...")
-                try:
-                    kept_reps, color_map, pad_candidates = reduce_colors_lab_de00_with_hue_balance(unique_colors, counts, target_size)
-                    # Remap quantized_array colors to their representatives using shared helper
-                    quantized_array = remap_rgb_array_to_representatives(quantized_array, color_map)
-                    quantized_rgb = Image.fromarray(quantized_array.astype('uint8'), 'RGB')
-
-                    # Recompute unique colors after remap
-                    unique_colors = np.unique(quantized_array.reshape(-1, 3), axis=0)
-                    num_colors = len(unique_colors)
-                    logger.debug(f"Post-reduction unique colors: {num_colors}")
-                except Exception as e:
-                    logger.error(f"LAB/ΔE00 reduction failed: {e}")
-
-            # Handle cases where we have fewer than Palette_SIZE colors (either originally or after reduction)
-            if num_colors < target_size:
-                # New behavior: pad to next power-of-two based on actual color count, not the configured target
-                pad_to = int(next_power_of_2(max(1, num_colors)))
-                if pad_to == num_colors:
-                    logger.info(f"Color count {num_colors} is already a power of two; no padding needed")
-                else:
-                    logger.warning(f"Quantization has {num_colors} colors, padding to next power-of-two {pad_to} (config target {target_size})")
-                    self.progress_updated.emit(70, f"Padding colors from {num_colors} to {pad_to}...")
-
-                    # Pad with additional colors to reach pad_to
-                    padded_colors = pad_colors_to_target(unique_colors, original_img, pad_to)
-                    unique_colors = padded_colors
-                    num_colors = pad_to
-
-                    # Update the quantized image with padded colors (no-op placeholder)
-                    quantized_array = rebuild_image_with_padded_colors(quantized_array, unique_colors)
-                    quantized_rgb = Image.fromarray(quantized_array.astype('uint8'), 'RGB')
-
-                    quantization_info['color_padding'] = f"Padded from {len(np.unique(flat, axis=0))} to {pad_to} colors"
-                    quantization_info['original_color_count'] = int(len(np.unique(flat, axis=0)))
-
-            # If still over target (reduction failed to trim enough), trim by perceptual selection
-            if num_colors > target_size:
-                self.progress_updated.emit(72, f"Trimming {num_colors}→{target_size} by perceptual selection...")
-                # Pick a perceptually sorted order and keep first target_size distinct colors
-                sorted_colors = perceptual_color_sort([tuple(c) for c in unique_colors])
-                unique_colors = np.array(sorted_colors[:target_size], dtype=np.uint8)
-                num_colors = target_size
-
-            # Final verification: ensure we have a sensible palette size
-            if num_colors < 1:
-                error_msg = f"Quantization produced an invalid palette size: {num_colors}"
-                logger.error(error_msg)
-                return {'success': False, 'error': error_msg}
-
-            self.progress_updated.emit(100, "Quantization complete!")
-
-            # Quantize any extra images provided (for additional Palette blocks)
+            # Prepare additional data: extra images and greyscale textures pre-processing
             extra_images_data = []
             if self.extra_image_paths:
-                self.progress_updated.emit(85, f"Quantizing {len(self.extra_image_paths)} extra image(s)...")
+                self.progress_updated.emit(80, f"Preparing {len(self.extra_image_paths)} additional texture(s)...")
 
                 def _process_extra_image(p):
                     try:
@@ -247,12 +136,14 @@ class SinglePaletteGenerationWorker(QThread):
 
                         ex_proc2 = fit_within(ex_proc, width, height)
                         ex_w2, ex_h2 = ex_proc2.size
-                        ex_quantized, _ = quantize_image(ex_proc2, cfg.get(cfg.ci_default_quant_method))
-                        ex_quant_rgb = ex_quantized.convert('RGB')
-                        ex_arr = np.array(ex_quant_rgb)
+                        ex_quantized = quantize_image(ex_proc2, cfg.get(cfg.ci_default_quant_method))
+                        ex_idx = np.array(ex_quantized, dtype=np.uint8)
+                        ex_pal_flat = np.array(ex_quantized.getpalette(), dtype=np.uint8)
+                        ex_pal = ex_pal_flat.reshape(-1, 3) if ex_pal_flat.size > 0 else np.zeros((0, 3), dtype=np.uint8)
+                        ex_arr = ex_pal[ex_idx]
                         return {
                             'path': p,
-                            'quantized_image': ex_quant_rgb,
+                            'quantized_image': None,
                             'quantized_array': ex_arr,
                             'original_dimensions': (ex_orig_w, ex_orig_h),
                             'processed_dimensions': (ex_w2, ex_h2),
@@ -295,9 +186,11 @@ class SinglePaletteGenerationWorker(QThread):
 
                         gs_proc2 = fit_within(gs_proc, width, height)
                         gs_w2, gs_h2 = gs_proc2.size
-                        gs_quantized, _ = quantize_image(gs_proc2, cfg.get(cfg.ci_default_quant_method))
-                        gs_quant_rgb = gs_quantized.convert('RGB')
-                        gs_quant_arr = np.array(gs_quant_rgb)
+                        gs_quantized = quantize_image(gs_proc2, cfg.get(cfg.ci_default_quant_method))
+                        gs_idx = np.array(gs_quantized, dtype=np.uint8)
+                        gs_pal_flat = np.array(gs_quantized.getpalette(), dtype=np.uint8)
+                        gs_pal = gs_pal_flat.reshape(-1, 3) if gs_pal_flat.size > 0 else np.zeros((0, 3), dtype=np.uint8)
+                        gs_quant_arr = gs_pal[gs_idx]
                         return {
                             'path': p,
                             'processed_color_image': gs_proc2.convert('RGB'),
@@ -320,108 +213,76 @@ class SinglePaletteGenerationWorker(QThread):
                         ordered_results[idx] = res
                     greyscale_textures_data.extend([r for r in ordered_results if r is not None])
 
-            # Prepare results for quantization step (always)
-            results = {
-                'success': True,
-                'step': 'quantize',
-                'original_image': original_img,
-                'quantized_image': quantized_rgb,
-                'quantized_array': quantized_array,
-                'unique_colors': unique_colors,
-                'quantization_info': quantization_info,
-                'dimensions': (width, height),
-                'base_original_dimensions': (base_orig_w, base_orig_h),
-                'base_processed_dimensions': (width, height),
-                'working_resolution': self.working_resolution,
-                'actual_color_count': num_colors,
-                'palette_size': int(num_colors),
-                'extra_images': extra_images_data,
-                'greyscale_textures': greyscale_textures_data
-            }
-
-            logger.debug("Quantization step completed successfully")
-            return results
-
-        except Exception as e:
-            logger.error(f"Error in quantization step: {str(e)}", exc_info=True)
-            raise
-
-    def run_greyscale_step(self, quantize_data):
-        """Run only the greyscale conversion step using quantized data"""
-        try:
-            logger.debug("Starting greyscale step")
+            # =====================
+            # 2) GREYSCALE STEP
+            # =====================
             self.progress_updated.emit(10, "Preparing greyscale conversion...")
 
-            # Use quantized data from previous step
-            quantized_array = quantize_data['quantized_array']
-            unique_colors = quantize_data['unique_colors']
-            width, height = quantize_data['dimensions']
-            palette_size = int(quantize_data.get('palette_size') or len(unique_colors))
 
             self.progress_updated.emit(20, "Sorting colors and assigning greyscale values...")
 
-            # Sort colors using perceptual sorting to keep similar colors together
-            color_tuples = [tuple(color) for color in unique_colors]
-            sorted_colors = perceptual_color_sort(color_tuples)
+            color_tuples = [tuple(color) for color in palette_colors]
+            try:
+                sorted_colors = perceptual_color_sort(color_tuples)
+            except Exception as _:
+                sorted_colors = adjacency_aware_color_sort_pmode(quantized)
 
-            # Debug: Check the color distribution in the sorted list
-            logger.debug("Color distribution in sorted Palette:")
-            hue_groups = defaultdict(list)
-            for color in sorted_colors:
-                r, g, b = color
-                # Simple hue classification
-                if r > g and r > b:
-                    hue_groups['red'].append(color)
-                elif g > r and g > b:
-                    hue_groups['green'].append(color)
-                elif b > r and b > g:
-                    hue_groups['blue'].append(color)
-                elif r == g == b:
-                    hue_groups['gray'].append(color)
-                elif r > b and g > b:
-                    hue_groups['yellow'].append(color)
-                elif g > r and b > r:
-                    hue_groups['cyan'].append(color)
-                elif r > g and b > g:
-                    hue_groups['magenta'].append(color)
-                else:
-                    hue_groups['other'].append(color)
-
-            for hue, colors_in_group in hue_groups.items():
-                logger.debug(f"  {hue}: {len(colors_in_group)} colors")
-
-            # Create mapping: color -> greyscale value
             color_to_grey = {}
             grey_to_color = {}
-
             for grey_value, color in enumerate(sorted_colors):
                 color_to_grey[color] = grey_value
                 grey_to_color[grey_value] = np.array(color, dtype=np.uint8)
 
             logger.debug("Color to greyscale mapping created")
-
             self.progress_updated.emit(60, "Creating greyscale image...")
 
-            # Create greyscale image indices using shared mapper
-            # Build a LUT from the sorted colors mapping to their greyscale indices
             lut_exact = {tuple(map(int, c)): int(i) for i, c in enumerate(sorted_colors)}
             pal_int16 = np.array(sorted_colors, dtype=np.uint8).astype(np.int16)
             greyscale_array = map_rgb_array_to_palette_indices(quantized_array, lut_exact, pal_int16).astype(np.uint8)
+            # Mask out fully transparent pixels from greyscale mapping (use index 0 under mask)
+            try:
+                if original_array.shape[-1] == 4:
+                    alpha_mask = original_array[:, :, 3]
+                    mask_zero = (alpha_mask == 0)
+                    if mask_zero.any():
+                        greyscale_array[mask_zero] = 0
+            except Exception:
+                pass
 
-            # Convert to RGB for display
-            greyscale_image = Image.fromarray(greyscale_array, 'L')
-            # Scale greyscale values to 0-255 for better display
-            display_array = (greyscale_array * (255 / (palette_size - 1))).astype(np.uint8)
-            greyscale_rgb = Image.fromarray(display_array, 'L').convert('RGB')
+            try:
+                do_post = bool(cfg.get(cfg.ci_greyscale_post_enable)) if hasattr(cfg, 'ci_greyscale_post_enable') else False
+            except Exception:
+                do_post = False
+            if do_post:
+                greyscale_array = apply_smooth_dither(greyscale_array, palette_size)
+                # Re-apply transparency mask to ensure excluded areas remain zero
+                try:
+                    if original_array.shape[-1] == 4:
+                        alpha_mask = original_array[:, :, 3]
+                        greyscale_array[alpha_mask == 0] = 0
+                except Exception:
+                    pass
 
-            # Process greyscale-conversion textures using base color mapping
+            if palette_size > 1:
+                scale = 255.0 / float(palette_size - 1)
+            else:
+                scale = 0.0
+            disp = (greyscale_array.astype(np.float32) * scale).astype(np.uint8)
+            # Preserve original alpha in the greyscale output if available
+            try:
+                if original_array.shape[-1] == 4:
+                    alpha_mask = original_array[:, :, 3].astype(np.uint8)
+                    la = np.stack([disp, alpha_mask], axis=2)
+                    greyscale_rgb = Image.fromarray(la, 'LA')
+                else:
+                    greyscale_rgb = Image.fromarray(disp, 'L')
+            except Exception:
+                greyscale_rgb = Image.fromarray(disp, 'L')
+
             greyscale_textures_results = []
-            gs_sources = quantize_data.get('greyscale_textures', [])
+            gs_sources = greyscale_textures_data
             if gs_sources:
                 self.progress_updated.emit(80, f"Mapping {len(gs_sources)} greyscale conversion texture(s)...")
-                palette = np.array(sorted_colors, dtype=np.int16)  # use int16 to avoid uint8 overflow during diff
-
-                # Reuse the already built palette and mapping to compute indices for each extra image
                 for entry in gs_sources:
                     try:
                         proc_img = entry.get('processed_color_image')
@@ -431,14 +292,33 @@ class SinglePaletteGenerationWorker(QThread):
                         else:
                             proc_arr = entry.get('processed_color_array')
                         if proc_arr is None:
-                            # fall back to their quantized array if present
                             proc_arr = entry.get('quantized_array')
                         if proc_arr is None:
                             continue
-                        # Map using shared engine function
                         gs_indices = map_rgb_array_to_palette_indices(proc_arr, lut_exact, pal_int16).astype(np.uint8)
-                        disp = (gs_indices * (255 / (palette_size - 1))).astype(np.uint8)
-                        gs_img = Image.fromarray(disp, 'L').convert('RGB')
+                        try:
+                            do_post_t = bool(cfg.get(cfg.ci_greyscale_post_enable)) if hasattr(cfg, 'ci_greyscale_post_enable') else False
+                            apply_textures = bool(cfg.get(cfg.ci_greyscale_post_apply_to_textures)) if hasattr(cfg, 'ci_greyscale_post_apply_to_textures') else True
+                        except Exception:
+                            do_post_t = False
+                            apply_textures = True
+                        if do_post_t and apply_textures:
+                            gs_indices = apply_smooth_dither(gs_indices, palette_size)
+                        disp_t = (gs_indices * (255 / (palette_size - 1))).astype(np.uint8) if palette_size > 1 else np.zeros_like(gs_indices, dtype=np.uint8)
+                        # Apply the texture's own alpha as a mask if present
+                        try:
+                            src_arr = np.array(proc_img)
+                            if src_arr.shape[-1] == 4:
+                                alpha_t = src_arr[:, :, 3].astype(np.uint8)
+                                # Ensure masked areas are zero
+                                gs_indices[alpha_t == 0] = 0
+                                disp_t = (gs_indices * (255 / (palette_size - 1))).astype(np.uint8) if palette_size > 1 else np.zeros_like(gs_indices, dtype=np.uint8)
+                                la_t = np.stack([disp_t, alpha_t], axis=2)
+                                gs_img = Image.fromarray(la_t, 'LA')
+                            else:
+                                gs_img = Image.fromarray(disp_t, 'L')
+                        except Exception:
+                            gs_img = Image.fromarray(disp_t, 'L')
                         greyscale_textures_results.append({
                             'path': entry.get('path'),
                             'processed_color_image': proc_img if proc_img is not None else Image.fromarray(
@@ -451,138 +331,75 @@ class SinglePaletteGenerationWorker(QThread):
 
             self.progress_updated.emit(100, "Greyscale conversion complete!")
 
-            # Prepare results for greyscale step
-            results = {
-                'success': True,
-                'step': 'greyscale',
-                'greyscale_image': greyscale_rgb,
-                'greyscale_array': greyscale_array,
-                'color_to_grey': color_to_grey,
-                'grey_to_color': grey_to_color,
-                'sorted_colors': sorted_colors,
-                'palette_size': palette_size,
-                'greyscale_textures_results': greyscale_textures_results
-            }
-
-            logger.debug("Greyscale step completed successfully")
-            return results
-
-        except Exception as e:
-            logger.error(f"Error in greyscale step: {str(e)}", exc_info=True)
-            raise
-
-    def run_palette_step(self, greyscale_data, quantize_data):
-        """Run only the Palette creation step using greyscale and quantized data"""
-        try:
-            logger.debug("Starting Palette step")
+            # =====================
+            # 3) PALETTE STEP
+            # =====================
             self.progress_updated.emit(10, "Creating Palette...")
 
-            # Use data from previous steps
-            grey_to_color = greyscale_data['grey_to_color']
-            greyscale_array = greyscale_data['greyscale_array']
-            quantized_array = quantize_data['quantized_array']
-            width, height = quantize_data['dimensions']
-            palette_size = int(greyscale_data.get('palette_size') or quantize_data.get('palette_size') or len(greyscale_data.get('sorted_colors', [])) or len(quantize_data.get('unique_colors', [])) or 256)
-
-            # Calculate Palette dimensions base (will expand when extras present)
-            palette_width = palette_size
-
-            # Base Palette from primary image mapping
+            # Base palette row
             base_palette_array = np.zeros((palette_size, 3), dtype=np.uint8)
             for grey_value in range(palette_size):
                 base_palette_array[grey_value] = grey_to_color[grey_value]
 
-            # Build additional Palette arrays for each extra image using dominant color per grey index
+            # Extra rows from additional textures
             extra_palette_arrays = []
-            extra_sources = quantize_data.get('extra_images', [])
+            extra_sources = extra_images_data
             if extra_sources:
-                # Build masks once for each grey_value
-                # greyscale_array contains indices 0..palette_size-1
-                height_g, width_g = greyscale_array.shape
-                # Precompute positions for each grey index to speed up
-                positions_by_grey = {}
-                for g in range(palette_size):
-                    positions = np.argwhere(greyscale_array == g)
-                    positions_by_grey[g] = positions
-
                 for extra in extra_sources:
                     extra_arr = extra.get('quantized_array')
                     if extra_arr is None:
                         continue
-                    # Ensure dimensions match; if not, resize nearest
-                    if extra_arr.shape[:2] != (height_g, width_g):
-                        try:
-                            img = Image.fromarray(extra_arr.astype('uint8'), 'RGB')
-                            img = img.resize((width_g, height_g), Image.Resampling.NEAREST)
-                            extra_arr = np.array(img)
-                        except Exception:
-                            pass
-                    palette_for_extra = np.zeros((palette_size, 3), dtype=np.uint8)
-                    for g in range(palette_size):
-                        positions = positions_by_grey.get(g)
-                        if positions is None or positions.size == 0:
-                            # Fallback to base color when no pixels for this grey
-                            palette_for_extra[g] = base_palette_array[g]
-                            continue
-                        # Gather colors from the extra image at these positions
-                        colors = extra_arr[positions[:, 0], positions[:, 1]]
-                        if colors.size == 0:
-                            palette_for_extra[g] = base_palette_array[g]
-                            continue
-                        # Compute dominant color (mode)
-                        tuples = [tuple(c) for c in colors]
-                        most_common = Counter(tuples).most_common(1)
-                        if most_common:
-                            palette_for_extra[g] = np.array(most_common[0][0], dtype=np.uint8)
-                        else:
-                            palette_for_extra[g] = base_palette_array[g]
+                    label = os.path.basename(extra.get('path', 'extra'))
+                    palette_for_extra = build_row_from_arrays(
+                        greyscale_indices=greyscale_array,
+                        rgb_array=extra_arr,
+                        base_row=base_palette_array,
+                        palette_size=palette_size,
+                        log_top_k=3,
+                        context_label=label
+                    )
                     extra_palette_arrays.append(palette_for_extra)
 
-            # Compose all Palette blocks: base + extras
+            # Optional upscale to 256
+            palette_size_out = palette_size
+            try:
+                do_upscale = bool(cfg.get(cfg.ci_palette_upscale_to_256)) if hasattr(cfg, 'ci_palette_upscale_to_256') else False
+                sigma_cfg = float(cfg.get(cfg.ci_palette_upscale_sigma)) if hasattr(cfg, 'ci_palette_upscale_sigma') else 10.0
+            except Exception:
+                do_upscale = False
+                sigma_cfg = 10.0
+            upscale_sigma = float(sigma_cfg) / 10.0
+
+            if do_upscale and palette_size < 256:
+                base_palette_array = upscale_and_smooth_lut(base_palette_array, target_size=256, sigma=upscale_sigma)
+                if extra_palette_arrays:
+                    extra_palette_arrays = [upscale_and_smooth_lut(r, target_size=256, sigma=upscale_sigma) for r in extra_palette_arrays]
+                # Remap greyscale indices to 0..255
+                if palette_size > 1:
+                    scale_u = 255.0 / float(palette_size - 1)
+                    greyscale_array = np.clip(np.round(greyscale_array.astype(np.float32) * scale_u), 0, 255).astype(np.uint8)
+                else:
+                    greyscale_array = np.zeros_like(greyscale_array, dtype=np.uint8)
+                palette_size_out = 256
+
+            # Compose palette image
             all_blocks = [base_palette_array] + extra_palette_arrays if extra_palette_arrays else [base_palette_array]
-            num_blocks = len(all_blocks)
-            # Calculate height based on settings
-            greyscale_header_rows = 0
-            required_height = greyscale_header_rows + self.palette_row_height * num_blocks
-            palette_height = next_power_of_2(required_height)  # Ensure height is power of 2
-
-            # Create Palette image
-            palette_image_array = np.zeros((palette_height, palette_width, 3), dtype=np.uint8)
-
-            # Color Palette blocks: specified rows per block (base + extras)
-            for block_idx, block_array in enumerate(all_blocks):
-                start_row = greyscale_header_rows + block_idx * self.palette_row_height
-                end_row = start_row + self.palette_row_height
-                for row in range(start_row, end_row):
-                    for col in range(palette_width):
-                        if col < palette_size:
-                            palette_image_array[row, col] = block_array[col]
-                        else:
-                            palette_image_array[row, col] = [0, 0, 0]
-
-            # Fill any remaining rows (padding to reach power of 2 height) with greyscale gradient pattern
-            filled_rows = greyscale_header_rows + self.palette_row_height * num_blocks
-            if filled_rows < palette_height:
-                for row in range(filled_rows, palette_height):
-                    for col in range(palette_width):
-                        # Use greyscale gradient pattern for padding
-                        grey_value = int(col * (255 / (palette_width - 1)))  # Scale to 0-255
-                        palette_image_array[row, col] = [grey_value, grey_value, grey_value]
-
-            palette_image = Image.fromarray(palette_image_array.astype('uint8'), 'RGB')
+            palette_image = compose_palette_image(
+                rows=all_blocks,
+                row_height=self.palette_row_height,
+                palette_size=palette_size_out,
+                pad_mode='gradient'
+            )
 
             self.progress_updated.emit(50, "Applying Palette to greyscale for preview...")
-
-            # Create preview: Apply Palette to greyscale image
-            preview_array = self.apply_palette_to_greyscale(greyscale_array, base_palette_array, palette_size)
-            preview_image = Image.fromarray(preview_array.astype('uint8'), 'RGB')
+            preview_image = apply_palette_to_greyscale(palette_image, greyscale_rgb)
 
             if self.produce_color_report:
                 self.progress_updated.emit(80, "Creating color report...")
                 color_distribution = analyze_color_distribution(quantized_array)
                 color_report_data = []
-                for grey_value in range(palette_size):
-                    color = tuple(base_palette_array[grey_value])  # Convert to tuple
+                for grey_value in range(palette_size_out):
+                    color = tuple(base_palette_array[grey_value])
                     frequency = color_distribution.get(color, 0)
                     color_report_data.append({
                         'grey_value': int(grey_value),
@@ -596,339 +413,95 @@ class SinglePaletteGenerationWorker(QThread):
 
             self.progress_updated.emit(100, "Palette creation complete!")
 
-            # Prepare results for Palette step
-            results = {
-                'success': True,
-                'step': 'palette',
-                'palette_image': palette_image,
-                'preview_image': preview_image,
-                'palette_array': base_palette_array,
-                'color_report_data': color_report_data,
-                'color_distribution': color_distribution,
-                'palette_dimensions': (palette_width, palette_height),
-                'palette_size': palette_size,
-                'num_blocks': num_blocks,
-                'block_sources': ['base'] + [os.path.basename(x.get('path', 'extra')) for x in
-                                             quantize_data.get('extra_images', [])],
-                'working_resolution': quantize_data.get('working_resolution'),
-                'base_processed_dimensions': quantize_data.get('base_processed_dimensions'),
-                'debug_info': {
-                    'palette_structure': f'Top {greyscale_header_rows} rows: No header, then {num_blocks} block(s) of {self.palette_row_height} rows each ({palette_size} colors per block)'
-                }
-            }
+            # =====================
+            # 4) SAVE RESULTS
+            # =====================
+            # Inline save_all_results logic using local variables
+            try:
+                logger.debug("Saving all results")
+                self.progress_updated.emit(90, "Saving files...")
 
-            logger.debug("Palette step completed successfully")
-            return results
+                # Simplified base name (no method/size suffixes)
+                base_name = os.path.splitext(os.path.basename(self.image_path))[0]
+
+                # Determine output format based on input format
+                source_is_dds = self.image_path.lower().endswith('.dds')
+                output_extension = ".dds" if source_is_dds else ".png"
+
+                output_files = {}
+
+                # Save core outputs
+
+                quantized_path = os.path.join(self.output_dir, f"{base_name}_quantized{output_extension}")
+                save_image(quantized.convert("RGB"), quantized_path)
+
+                greyscale_path = os.path.join(self.output_dir, f"{base_name}_greyscale{output_extension}")
+                save_image(greyscale_rgb, greyscale_path)
+                output_files['greyscale'] = greyscale_path
+                logger.debug(f"Saved greyscale image: {greyscale_path}")
+
+                palette_path = os.path.join(self.output_dir, f"{base_name}_palette{output_extension}")
+                save_image(palette_image, palette_path)
+                output_files['palette'] = palette_path
+                logger.debug(f"Saved Palette: {palette_path}")
+
+                # Save greyscale-conversion textures
+                saved_gs_textures = []
+                saved_color_textures = []
+                gs_tex_list = greyscale_textures_results
+                for idx, entry in enumerate(gs_tex_list, start=1):
+                    try:
+                        color_img = entry.get('processed_color_image')
+                        grey_img = entry.get('greyscale_image')
+                        if color_img is None or grey_img is None:
+                            continue
+
+                        color_out = os.path.join(self.output_dir, f"{base_name}_texture{idx}{output_extension}")
+                        grey_out = os.path.join(self.output_dir, f"{base_name}_greyscaletexture_{idx}{output_extension}")
+
+                        save_image(color_img, color_out)
+                        save_image(grey_img, grey_out)
+
+                        saved_color_textures.append(color_out)
+                        saved_gs_textures.append(grey_out)
+                    except Exception as ex:
+                        logger.warning(f"Failed saving greyscale conversion texture {idx}: {ex}")
+                if saved_color_textures:
+                    output_files['textures'] = saved_color_textures
+                if saved_gs_textures:
+                    output_files['greyscale_textures'] = saved_gs_textures
+
+                # Optional: Save color report
+                color_report_path = None
+                if self.produce_color_report and color_report_data:
+                    color_report_path = os.path.join(self.output_dir, f"{base_name}_color_report.json")
+                    self.save_color_report(color_report_data, color_report_path)
+                    output_files['color_report'] = color_report_path
+                    logger.debug(f"Saved color report: {color_report_path}")
+
+                pixmap = self.parent.pil_to_pixmap(quantized.convert("RGB"))
+                self.parent.update_preview(pixmap, self.parent.quantized_preview_label)
+
+                pixmap = self.parent.pil_to_pixmap(greyscale_rgb)
+                self.parent.update_preview(pixmap, self.parent.greyscale_preview_label)
+
+                pixmap = self.parent.pil_to_pixmap(preview_image)
+                self.parent.update_preview(pixmap, self.parent.preview_label)
+
+                default_grey_path = os.path.normpath(os.path.join(get_app_root(), 'resource', 'grayscale_4k_cutout.png'))
+                pixmap = self.parent.pil_to_pixmap(apply_palette_to_greyscale(palette_image, load_image(default_grey_path, f='L')))
+                self.parent.update_preview(pixmap, self.parent.debug_preview_label)
+
+                self.progress_updated.emit(100, "Complete!")
+                logger.debug("All results saved successfully")
+            except Exception as e:
+                logger.error(f"Error saving results: {str(e)}", exc_info=True)
+                raise
 
         except Exception as e:
-            logger.error(f"Error in Palette step: {str(e)}", exc_info=True)
-            raise
+            logger.error(f"Error in Palette generation: {str(e)}", exc_info=True)
+            self.error_occurred.emit(str(e))
 
-    def apply_palette_to_greyscale(self, greyscale_array, palette_array, palette_size):
-        """Apply Palette to greyscale image to create preview (no sRGB compensation)"""
-        logger.debug("Applying Palette to greyscale image")
-        height, width = greyscale_array.shape
-        result = np.zeros((height, width, 3), dtype=np.uint8)
-        mask = greyscale_array < palette_size
-        result[mask] = palette_array[greyscale_array[mask]]
-        logger.debug("Palette application completed")
-        return result
-
-    def save_all_results(self):
-        """Save all results after completing all steps"""
-        try:
-            logger.debug("Saving all results")
-            self.progress_updated.emit(90, "Saving files...")
-
-            # Verify we have all required data
-            required_steps = ['quantize', 'greyscale', 'palette']
-            missing_steps = [step for step in required_steps if step not in self.previous_data]
-
-            if missing_steps:
-                error_msg = f"Missing required data for steps: {missing_steps}. Cannot save results."
-                logger.error(error_msg)
-                self.error_occurred.emit(error_msg)
-                return
-
-            # Get data from all steps
-            quantize_data = self.previous_data['quantize']
-            greyscale_data = self.previous_data['greyscale']
-            palette_data = self.previous_data['palette']
-
-            # Extract data with safety checks
-            if not all(key in quantize_data for key in ['quantized_image', 'unique_colors', 'dimensions']):
-                error_msg = "Quantize data is incomplete"
-                logger.error(error_msg)
-                self.error_occurred.emit(error_msg)
-                return
-
-            if not all(key in greyscale_data for key in ['greyscale_image', 'color_to_grey', 'grey_to_color']):
-                error_msg = "Greyscale data is incomplete"
-                logger.error(error_msg)
-                self.error_occurred.emit(error_msg)
-                return
-
-            if not all(key in palette_data for key in ['palette_image', 'preview_image', 'color_report_data']):
-                error_msg = "Palette data is incomplete"
-                logger.error(error_msg)
-                self.error_occurred.emit(error_msg)
-                return
-
-            quantized_rgb = quantize_data['quantized_image']
-            greyscale_rgb = greyscale_data['greyscale_image']
-            palette_image = palette_data['palette_image']
-            preview_image = palette_data['preview_image']
-            color_to_grey = greyscale_data['color_to_grey']
-            grey_to_color = greyscale_data['grey_to_color']
-            unique_colors = quantize_data['unique_colors']
-            color_distribution = palette_data.get('color_distribution', {})
-            color_report_data = palette_data['color_report_data']
-            width, height = quantize_data['dimensions']
-            palette_size = int(palette_data.get('palette_size') or greyscale_data.get('palette_size') or quantize_data.get('palette_size') or len(quantize_data.get('unique_colors', [])) or 256)
-            palette_width, palette_height = palette_data['palette_dimensions']
-
-            # Simplified base name (no method/size suffixes)
-            base_name = os.path.splitext(os.path.basename(self.image_path))[0]
-
-            # Determine output format based on input format
-            source_is_dds = self.image_path.lower().endswith('.dds')
-            output_extension = ".dds" if source_is_dds else ".png"
-
-            output_files = {}
-
-            # Save core outputs in the appropriate format
-            greyscale_path = os.path.join(self.output_dir, f"{base_name}_greyscale{output_extension}")
-            if source_is_dds:
-                # For DDS output, use texconv when available; keep temps inside output_dir and always clean them up
-                temp_greyscale_path = os.path.join(self.output_dir, f"{base_name}_greyscale_temp.png")
-                try:
-                    greyscale_rgb.save(temp_greyscale_path)
-                    convert_to_dds(temp_greyscale_path, greyscale_path)
-                finally:
-                    try:
-                        if os.path.exists(temp_greyscale_path):
-                            os.remove(temp_greyscale_path)
-                    except Exception as _cleanup_ex:
-                        logger.warning(f"Failed to remove temp file {temp_greyscale_path}: {_cleanup_ex}")
-            else:
-                greyscale_rgb.save(greyscale_path)
-            output_files['greyscale'] = greyscale_path
-            logger.debug(f"Saved greyscale image: {greyscale_path}")
-
-            palette_path = os.path.join(self.output_dir, f"{base_name}_palette{output_extension}")
-            if source_is_dds:
-                # For DDS output, use texconv when available; keep temps inside output_dir and always clean them up
-                temp_palette_path = os.path.join(self.output_dir, f"{base_name}_palette_temp.png")
-                try:
-                    palette_image.save(temp_palette_path)
-                    convert_to_dds(temp_palette_path, palette_path, is_palette=True,
-                                        palette_width=palette_width, palette_height=palette_height)
-                finally:
-                    try:
-                        if os.path.exists(temp_palette_path):
-                            os.remove(temp_palette_path)
-                    except Exception as _cleanup_ex:
-                        logger.warning(f"Failed to remove temp file {temp_palette_path}: {_cleanup_ex}")
-            else:
-                palette_image.save(palette_path)
-
-            output_files['palette'] = palette_path
-            logger.debug(f"Saved Palette: {palette_path}")
-
-            # Save greyscale-conversion textures in the appropriate format
-            saved_gs_textures = []
-            saved_color_textures = []
-            gs_tex_list = greyscale_data.get('greyscale_textures_results', [])
-            for idx, entry in enumerate(gs_tex_list, start=1):
-                try:
-                    color_img = entry.get('processed_color_image')
-                    grey_img = entry.get('greyscale_image')
-                    if color_img is None or grey_img is None:
-                        continue
-
-                    color_out = os.path.join(self.output_dir, f"{base_name}_texture{idx}{output_extension}")
-                    grey_out = os.path.join(self.output_dir, f"{base_name}_greyscaletexture_{idx}{output_extension}")
-
-                    if source_is_dds:
-                        # For DDS output, save temp PNG and convert. Always clean up temps.
-                        temp_color_path = os.path.join(self.output_dir, f"{base_name}_texture{idx}_temp.png")
-                        temp_grey_path = os.path.join(self.output_dir, f"{base_name}_greyscaletexture_{idx}_temp.png")
-                        try:
-                            color_img.save(temp_color_path)
-                            grey_img.save(temp_grey_path)
-                            convert_to_dds(temp_color_path, color_out)
-                            convert_to_dds(temp_grey_path, grey_out)
-                        finally:
-                            for _p in (temp_color_path, temp_grey_path):
-                                try:
-                                    if os.path.exists(_p):
-                                        os.remove(_p)
-                                except Exception as _cleanup_ex:
-                                    logger.warning(f"Failed to remove temp file {_p}: {_cleanup_ex}")
-                    else:
-                        color_img.save(color_out)
-                        grey_img.save(grey_out)
-
-                    saved_color_textures.append(color_out)
-                    saved_gs_textures.append(grey_out)
-                except Exception as ex:
-                    logger.warning(f"Failed saving greyscale conversion texture {idx}: {ex}")
-            if saved_color_textures:
-                output_files['textures'] = saved_color_textures
-            if saved_gs_textures:
-                output_files['greyscale_textures'] = saved_gs_textures
-
-            # Optional: Save color report only when enabled
-            color_report_path = None
-            if self.produce_color_report and color_report_data:
-                color_report_path = os.path.join(self.output_dir, f"{base_name}_color_report.json")
-                self.save_color_report(color_report_data, color_report_path)
-                output_files['color_report'] = color_report_path
-                logger.debug(f"Saved color report: {color_report_path}")
-
-            # Generate DDS if source was DDS (mirror simplified names) - initialize dds_files
-            dds_files = {}
-            source_is_dds = self.image_path.lower().endswith('.dds')
-
-            if source_is_dds:
-                try:
-                    # Convert greyscale to DDS
-                    temp_greyscale_path = os.path.join(self.output_dir, f"{base_name}_greyscale_temp.png")
-                    try:
-                        greyscale_rgb.save(temp_greyscale_path)
-                        greyscale_dds_path = os.path.join(self.output_dir, f"{base_name}_greyscale.dds")
-                        convert_to_dds(temp_greyscale_path, greyscale_dds_path)
-                        dds_files['greyscale'] = greyscale_dds_path
-                    finally:
-                        try:
-                            if os.path.exists(temp_greyscale_path):
-                                os.remove(temp_greyscale_path)
-                        except Exception as _cleanup_ex:
-                            logger.warning(f"Failed to remove temp file {temp_greyscale_path}: {_cleanup_ex}")
-
-                    # Convert Palette to DDS
-                    temp_palette_path = os.path.join(self.output_dir, f"{base_name}_palette_temp.png")
-                    try:
-                        palette_image.save(temp_palette_path)
-                        palette_dds_path = os.path.join(self.output_dir, f"{base_name}_palette.dds")
-                        convert_to_dds(temp_palette_path, palette_dds_path, is_palette=True, palette_width=palette_width,
-                                            palette_height=palette_height)
-                        dds_files['palette'] = palette_dds_path
-                    finally:
-                        try:
-                            if os.path.exists(temp_palette_path):
-                                os.remove(temp_palette_path)
-                        except Exception as _cleanup_ex:
-                            logger.warning(f"Failed to remove temp file {temp_palette_path}: {_cleanup_ex}")
-
-                    # Convert greyscale conversion textures to DDS
-                    for idx, (cpath, gpath) in enumerate(zip(saved_color_textures, saved_gs_textures), start=1):
-                        try:
-                            # Create temp files for conversion
-                            temp_c_path = os.path.join(self.output_dir, f"temp_texture{idx}.png")
-                            temp_g_path = os.path.join(self.output_dir, f"temp_greyscaletexture_{idx}.png")
-
-                            # Load and save temp files
-                            Image.open(cpath).save(temp_c_path)
-                            Image.open(gpath).save(temp_g_path)
-
-                            c_dds = os.path.join(self.output_dir, f"{base_name}_texture{idx}.dds")
-                            g_dds = os.path.join(self.output_dir, f"{base_name}_greyscaletexture_{idx}.dds")
-                            convert_to_dds(temp_c_path, c_dds)
-                            convert_to_dds(temp_g_path, g_dds)
-                            dds_files.setdefault('textures_dds', []).append(c_dds)
-                            dds_files.setdefault('greyscale_textures_dds', []).append(g_dds)
-                        except Exception as ex:
-                            logger.warning(f"DDS mirror failed for greyscale texture {idx}: {ex}")
-                        finally:
-                            for _p in (temp_c_path, temp_g_path):
-                                try:
-                                    if os.path.exists(_p):
-                                        os.remove(_p)
-                                except Exception as _cleanup_ex:
-                                    logger.warning(f"Failed to remove temp file {_p}: {_cleanup_ex}")
-                except Exception as e:
-                    logger.error(f"DDS conversion during save failed: {e}")
-
-            # Optional: Save metadata only when enabled
-            metadata_path = None
-            if self.produce_metadata_json:
-                metadata = {
-                    'timestamp': datetime.now().isoformat(),
-                    'original_image': self.image_path,
-                    'quantization_method': cfg.get(cfg.ci_default_quant_method),
-                    'palette_size': palette_size,
-                    'working_resolution': quantize_data.get('working_resolution', None),
-                    'base_original_dimensions': f"{quantize_data.get('base_original_dimensions', (width, height))[0]}x{quantize_data.get('base_original_dimensions', (width, height))[1]}",
-                    'base_processed_dimensions': f"{width}x{height}",
-                    'quantization_info': quantize_data['quantization_info'],
-                    'dimensions': {
-                        'original': f"{width}x{height}",
-                        'greyscale': f"{width}x{height}",
-                        'palette': f"{palette_width}x{palette_height}"
-                    },
-                    'color_mapping': {str([int(k[0]), int(k[1]), int(k[2])]): int(v) for k, v in color_to_grey.items()},
-                    'unique_colors': len(unique_colors),
-                    'sorting_method': 'perceptual_luminance_hue',
-                    'color_distribution_summary': {
-                        'most_common_color': [int(c) for c in max(color_distribution,
-                                                                  key=color_distribution.get)] if color_distribution else None,
-                        'most_common_frequency': max(color_distribution.values()) if color_distribution else 0,
-                        'total_pixels': height * width
-                    },
-                    'dds_generated': source_is_dds and bool(dds_files),
-                    'palette_texture_dimensions': f'{palette_width}x{palette_height} (Power of Two)',
-                    'num_blocks': palette_data.get('num_blocks', 1),
-                    'block_sources': palette_data.get('block_sources', ['base']),
-                    'extra_images': [x.get('path') for x in quantize_data.get('extra_images', [])],
-                    'extra_images_details': [
-                        {
-                            'path': x.get('path'),
-                            'original_dimensions': f"{x.get('original_dimensions', x.get('dimensions', (0, 0)))[0]}x{x.get('original_dimensions', x.get('dimensions', (0, 0)))[1]}",
-                            'processed_dimensions': f"{x.get('processed_dimensions', x.get('dimensions', (0, 0)))[0]}x{x.get('processed_dimensions', x.get('dimensions', (0, 0)))[1]}"
-                        }
-                        for x in quantize_data.get('extra_images', [])
-                    ],
-                    'greyscale_conversion_textures': [x.get('path') for x in
-                                                      quantize_data.get('greyscale_textures', [])]
-                }
-
-                metadata_path = os.path.join(self.output_dir, f"{base_name}_metadata.json")
-                with open(metadata_path, 'w') as f:
-                    json.dump(metadata, f, indent=2)
-                logger.debug(f"Saved metadata: {metadata_path}")
-
-            # Merge DDS file paths into output files
-            output_files.update(dds_files)
-
-            results = {
-                'success': True,
-                'original_image': quantize_data['original_image'],
-                'quantized_image': quantized_rgb,
-                'greyscale_image': greyscale_rgb,
-                'palette_image': palette_image,
-                'preview_image': preview_image,
-                'color_report_data': color_report_data,
-                'color_distribution': color_distribution,
-                'quantization_method': cfg.get(cfg.ci_default_quant_method),
-                'palette_size': palette_size,
-                'srgb_compensation_applied': self.srgb_compensation,
-                'output_files': output_files,
-                'mapping_info': {
-                    'color_to_grey': color_to_grey,
-                    'grey_to_color': grey_to_color,
-                    'unique_colors': len(unique_colors),
-                    'palette_array': palette_data.get('palette_array', np.zeros((palette_size, 3), dtype=np.uint8)).tolist()
-                }
-            }
-
-            self.progress_updated.emit(100, "Complete!")
-            self.result_ready.emit(results)
-            logger.debug("All results saved successfully")
-
-        except Exception as e:
-            logger.error(f"Error saving results: {str(e)}", exc_info=True)
-            raise
 
     def save_color_report(self, color_report_data, file_path):
         """Save color report data as JSON file"""
@@ -1081,14 +654,13 @@ class PaletteGenerator(BaseWidget):
         self.current_image_path = None
         self.output_dir = None
         self.current_results = None
-        self.quantized_data = None
-        self.greyscale_data = None
-        self.palette_data = None
+        # Per-step cached data removed: pipeline runs and completes in one worker call
         self.original_preview_label = None
         self.greyscale_preview_label = None
+        self.debug_preview_label = None
         self.quantized_preview_label = None
         self.preview_label = None
-        self.previous_data = {}  # Store data from previous steps
+        # previous_data removed; no step-by-step orchestration
         self.extra_image_paths = []  # Additional textures to include as Palette blocks
         self.greyscale_texture_paths = []  # Textures to convert to greyscale using base mapping
         self.pivot = SegmentedWidget(self)
@@ -1185,7 +757,7 @@ class PaletteGenerator(BaseWidget):
 
         # Generate button
         self.generate_all_button = PrimaryPushButton(icon=FIF.RIGHT_ARROW, text="Generate")
-        self.generate_all_button.clicked.connect(lambda: self.generate_step('all'))
+        self.generate_all_button.clicked.connect(self.generate_step)
         self.generate_all_button.setEnabled(False)
 
         # Reset buttons (next to Generate)
@@ -1207,10 +779,11 @@ class PaletteGenerator(BaseWidget):
             setattr(self, attr_name, label)
             return group
 
-        preview_splitter.addWidget(make_preview_group("Original Image", "original_preview_label"))
+        # Updated previews: Quantized, Greyscale, Preview on Greyscale, Preview on Debug Texture
         preview_splitter.addWidget(make_preview_group("Quantized", "quantized_preview_label"))
         preview_splitter.addWidget(make_preview_group("Greyscale (Color → Grey Mapping)", "greyscale_preview_label"))
         preview_splitter.addWidget(make_preview_group("Preview (Palette Applied to Greyscale)", "preview_label"))
+        preview_splitter.addWidget(make_preview_group("Preview (Palette Applied to Debug Texture)", "debug_preview_label"))
 
         preview_splitter.setSizes([400, 400, 400, 400])
         layout.addWidget(preview_splitter)
@@ -1246,13 +819,7 @@ class PaletteGenerator(BaseWidget):
             except Exception:
                 pass
 
-            self.load_and_display_image(file_path, self.original_preview_label, "Original Image")
-
-            # Reset step data
-            self.quantized_data = None
-            self.greyscale_data = None
-            self.palette_data = None
-            self.previous_data = {}
+            # No longer showing Original Image preview in the UI
 
             # Update button states
             self.update_button_states()
@@ -1374,7 +941,7 @@ class PaletteGenerator(BaseWidget):
             # Return a blank pixmap on error
             return QPixmap(100, 100)
 
-    def generate_step(self, step):
+    def generate_step(self):
         if not self.current_image_path:
             QMessageBox.warning(self, "Warning", "Please select an image first.")
             return
@@ -1386,11 +953,6 @@ class PaletteGenerator(BaseWidget):
             except Exception:
                 pass
 
-        # Get selected Palette size from ConfigItem
-        try:
-            palette_size = int(cfg.get(cfg.ci_default_palette_size) or 256)
-        except Exception:
-            palette_size = 256
 
         # Get working resolution from ConfigItem
         wr_val = cfg.get(cfg.ci_default_working_res).value
@@ -1402,10 +964,6 @@ class PaletteGenerator(BaseWidget):
             except Exception:
                 working_resolution = None
 
-        # Check if source is DDS and if texconv is available
-        source_is_dds = self.current_image_path.lower().endswith('.dds')
-        generate_dds = source_is_dds  # Only generate DDS if source is DDS
-
         # Disable buttons during processing and use parent mask progress
         self.set_buttons_enabled(False)
         p = getattr(self, 'parent', None)
@@ -1415,119 +973,37 @@ class PaletteGenerator(BaseWidget):
             except Exception:
                 pass
 
-        logger.debug(f"Starting generation step: {step}, Palette size: {palette_size}")
-
         self.worker = SinglePaletteGenerationWorker(
+            self,
             self.current_image_path,
             self.output_dir,
-            generate_dds,
-            step,
-            self.previous_data,
             extra_image_paths=self.extra_image_paths,
             working_resolution=working_resolution,
             produce_color_report=bool(cfg.get(cfg.ci_produce_color_report)),
-            produce_metadata_json=bool(cfg.get(cfg.ci_produce_metadata_json)),
             greyscale_texture_paths=self.greyscale_texture_paths,
             palette_row_height=int(cfg.get(cfg.ci_palette_row_height) or 4)
         )
 
         self.worker.progress_updated.connect(self.update_progress)
-        self.worker.result_ready.connect(self.show_results)
         self.worker.error_occurred.connect(self.handle_error)
-        self.worker.step_complete.connect(self.handle_step_complete)
         self.worker.start()
 
     def update_progress(self, value, message):
         p = getattr(self, 'parent', None)
-        if p and hasattr(p, 'update_progress'):
-            try:
-                p.update_progress(int(value))
-            except Exception:
-                pass
-        logger.info(f"Progress: {value}% - {message}")
-
-    def show_results(self, results):
-        self.set_buttons_enabled(True)
-        p = getattr(self, 'parent', None)
-        if p and hasattr(p, 'complete_loader'):
-            try:
-                p.complete_loader()
-            except Exception:
-                pass
-
-        if results.get('success'):
-            self.current_results = results
-
-            # Update previews for all-in-one generation
-            if 'quantized_image' in results:
-                pixmap = self.pil_to_pixmap(results['quantized_image'])
-                self.update_preview(pixmap, self.quantized_preview_label)
-
-            if 'greyscale_image' in results:
-                pixmap = self.pil_to_pixmap(results['greyscale_image'])
-                self.update_preview(pixmap, self.greyscale_preview_label)
-
-            if 'preview_image' in results:
-                pixmap = self.pil_to_pixmap(results['preview_image'])
-                self.update_preview(pixmap, self.preview_label)
-
-            # Update report tab
-            if 'color_report_data' in results:
-                quantization_method = results.get('quantization_method', 'unknown')
-                palette_size = results['palette_size']  # No fallback - should always be present
-                self.update_report_tab(results['color_report_data'])
-
-            # Show results
-            output_files = results.get('output_files', {})
-            quantization_method = results.get('quantization_method', 'unknown')
-            palette_size = results['palette_size']  # No fallback - should always be present
-            source_is_dds = self.current_image_path.lower().endswith('.dds')
-
-            wr = results.get('working_resolution', None)
-            base_dims = results.get('base_processed_dimensions') or (
-                self.quantized_data.get('dimensions') if self.quantized_data else None)
-            wr_str = 'Original' if not wr else f"{wr} px (long side)"
-            base_dims_str = f"{base_dims[0]}x{base_dims[1]}" if base_dims else "unknown"
-
-            result_text = f"""
-=== Palette GENERATION COMPLETE ===
-
-Method: {quantization_method}
-Palette Size: {palette_size} colors
-Working Resolution: {wr_str}
-Processed Base Size: {base_dims_str}
-
-Generated Files:
-• Greyscale: {os.path.basename(output_files.get('greyscale', ''))}
-• Palette: {os.path.basename(output_files.get('palette', ''))}
-"""
-
-            # Optional files
-            if output_files.get('color_report'):
-                result_text += f"• Color Report: {os.path.basename(output_files.get('color_report', ''))}\n"
-
-            palette_width, palette_height = results.get('palette_dimensions', (palette_size, 8))
-            # Determine how many header rows were included based on settings
-            palette_row_height = int(cfg.get(cfg.ci_palette_row_height) or 4)
-            num_blocks = results.get('num_blocks', 1)
-            header_rows = 0
-
-            result_text += f"""
-Note: Palette texture is {palette_width}×{palette_height} pixels (power of two dimensions for game engines).
-• Top {header_rows} rows: No header
-• Bottom rows: {num_blocks} block(s) of {palette_row_height} rows each ({palette_size}-color Palette blocks)
-• Colors are sorted perceptually to keep similar colors together
-"""
-
-            if bool(cfg.get(cfg.ci_produce_color_report)):
-                result_text += "See the \"Color Report\" tab for detailed analysis of color distribution."
-
-            logger.info(result_text)
-            logger.info("All-in-one generation completed successfully")
+        if value == 100:
+            self.set_buttons_enabled(True)
+            if p and hasattr(p, 'complete_loader'):
+                try:
+                    p.complete_loader()
+                except Exception:
+                    pass
         else:
-            error_msg = results.get('error', 'Unknown error occurred')
-            logger.error(f"Generation failed: {error_msg}")
-            QMessageBox.critical(self, "Error", f"Palette generation failed: {error_msg}")
+            if p and hasattr(p, 'update_progress'):
+                try:
+                    p.update_progress(int(value))
+                except Exception:
+                    pass
+        logger.info(f"Progress: {value}% - {message}")
 
     def handle_error(self, error_message):
         self.set_buttons_enabled(True)
@@ -1540,61 +1016,6 @@ Note: Palette texture is {palette_width}×{palette_height} pixels (power of two 
             except Exception:
                 pass
 
-    def handle_step_complete(self, step, results):
-        """Handle completion of individual steps"""
-        logger.debug(f"Step complete: {step}")
-
-        if results.get('success'):
-            if step == 'quantize':
-                self.quantized_data = results
-                self.previous_data['quantize'] = results  # Store for next steps
-
-                # Check if color padding was needed
-                actual_count = results.get('actual_color_count', results['palette_size'])
-                palette_size = results['palette_size']
-                if actual_count < palette_size:
-                    padding_info = results.get('quantization_info', {}).get('color_padding', '')
-                    warning_msg = f"⚠ Quantization produced only {actual_count} colors, padding was applied"
-                    logger.warning(warning_msg)
-                    if padding_info:
-                        logger.info(f"   {padding_info}")
-                else:
-                    logger.info(f"✓ Quantization complete - Image reduced to {palette_size} colors")
-
-                # Update quantized preview
-                if 'quantized_image' in results:
-                    pixmap = self.pil_to_pixmap(results['quantized_image'])
-                    self.update_preview(pixmap, self.quantized_preview_label)
-
-            elif step == 'greyscale':
-                self.greyscale_data = results
-                self.previous_data['greyscale'] = results  # Store for next steps
-                palette_size = results['palette_size']
-                logger.info(
-                    f"✓ Greyscale conversion complete - {palette_size} colors mapped to greyscale values (perceptually sorted)")
-
-                # Update greyscale preview
-                if 'greyscale_image' in results:
-                    pixmap = self.pil_to_pixmap(results['greyscale_image'])
-                    self.update_preview(pixmap, self.greyscale_preview_label)
-
-            elif step == 'palette':
-                self.palette_data = results
-                self.previous_data['palette'] = results  # Store for completeness
-                palette_size = results['palette_size']
-                srgb_compensation = results.get('srgb_compensation_applied', False)
-                compensation_status = "with sRGB compensation" if srgb_compensation else ""
-
-                # Update Palette and preview
-                if 'preview_image' in results:
-                    pixmap = self.pil_to_pixmap(results['preview_image'])
-                    self.update_preview(pixmap, self.preview_label)
-                if 'color_report_data' in results:
-                    self.update_report_tab(results['color_report_data'])
-                logger.info(
-                    f"✓ Palette generation complete - {palette_size}-color lookup table created {compensation_status}")
-
-        self.update_button_states()
 
     def update_preview(self, pixmap, label):
         scaled_pixmap = pixmap.scaled(
@@ -1637,222 +1058,3 @@ Note: Palette texture is {palette_width}×{palette_height} pixels (power of two 
     def update_button_states(self):
         """Update button states based on available data (single-button workflow)"""
         self.generate_all_button.setEnabled(self.current_image_path is not None)
-
-    def save_all_files(self):
-        """Save all generated files"""
-        if not self.quantized_data or not self.greyscale_data or not self.palette_data:
-            QMessageBox.warning(self, "Warning", "Please complete all generation steps first.")
-            return
-
-        try:
-            logger.debug("Saving all files")
-
-            # Get base name and paths
-            base_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
-            method = cfg.get(cfg.ci_default_quant_method).split(" - ")[0]
-            palette_size = self.quantized_data['palette_size']  # No fallback
-
-            # Determine output format based on input format
-            source_is_dds = self.current_image_path.lower().endswith('.dds')
-            output_extension = ".dds" if source_is_dds else ".png"
-
-            # Save quantized image in appropriate format
-            quantized_path = os.path.join(self.output_dir,
-                                          f"{base_name}_{method}_{palette_size}quantized{output_extension}")
-            if source_is_dds:
-                # Save as temp PNG and convert to DDS (temps in output_dir; always cleaned up)
-                temp_quantized_path = os.path.join(self.output_dir,
-                                                   f"{base_name}_{method}_{palette_size}quantized_temp.png")
-                try:
-                    self.quantized_data['quantized_image'].save(temp_quantized_path)
-                    convert_to_dds(temp_quantized_path, quantized_path)
-                finally:
-                    try:
-                        if os.path.exists(temp_quantized_path):
-                            os.remove(temp_quantized_path)
-                    except Exception as _cleanup_ex:
-                        logger.warning(f"Failed to remove temp file {temp_quantized_path}: {_cleanup_ex}")
-            else:
-                self.quantized_data['quantized_image'].save(quantized_path)
-
-            # Save greyscale image in appropriate format
-            greyscale_path = os.path.join(self.output_dir,
-                                          f"{base_name}_{method}_{palette_size}greyscale{output_extension}")
-            if source_is_dds:
-                # Save as temp PNG and convert to DDS (temps in output_dir; always cleaned up)
-                temp_greyscale_path = os.path.join(self.output_dir,
-                                                   f"{base_name}_{method}_{palette_size}greyscale_temp.png")
-                try:
-                    self.greyscale_data['greyscale_image'].save(temp_greyscale_path)
-                    convert_to_dds(temp_greyscale_path, greyscale_path)
-                finally:
-                    try:
-                        if os.path.exists(temp_greyscale_path):
-                            os.remove(temp_greyscale_path)
-                    except Exception as _cleanup_ex:
-                        logger.warning(f"Failed to remove temp file {temp_greyscale_path}: {_cleanup_ex}")
-            else:
-                self.greyscale_data['greyscale_image'].save(greyscale_path)
-
-            # Save Palette in appropriate format
-            palette_path = os.path.join(self.output_dir, f"{base_name}_{method}_{palette_size}Palette{output_extension}")
-            if source_is_dds:
-                # Save as temp PNG and convert to DDS (temps in output_dir; always cleaned up)
-                temp_palette_path = os.path.join(self.output_dir,
-                                             f"{base_name}_{method}_{palette_size}Palette_temp.png")
-                try:
-                    self.palette_data['palette_image'].save(temp_palette_path)
-                    palette_width, palette_height = self.palette_data.get('palette_dimensions', (palette_size, 8))
-                    convert_to_dds(temp_palette_path, palette_path, is_palette=True, palette_width=palette_width,
-                                        palette_height=palette_height)
-
-                finally:
-                    try:
-                        if os.path.exists(temp_palette_path):
-                            os.remove(temp_palette_path)
-                    except Exception as _cleanup_ex:
-                        logger.warning(f"Failed to remove temp file {temp_palette_path}: {_cleanup_ex}")
-            else:
-                self.palette_data['palette_image'].save(palette_path)
-
-            # Generate DDS if source was DDS
-            dds_files = {}
-            source_is_dds_check = self.current_image_path.lower().endswith('.dds')
-
-            if source_is_dds_check:
-                try:
-                    palette_width, palette_height = self.palette_data.get('palette_dimensions', (palette_size, 8))
-
-                    # Convert quantized to DDS
-                    quantized_dds_path = os.path.join(self.output_dir,
-                                                      f"{base_name}_{method}_{palette_size}quantized.dds")
-                    convert_to_dds(quantized_path, quantized_dds_path)
-                    dds_files['quantized'] = quantized_dds_path
-
-                    # Convert greyscale to DDS
-                    greyscale_dds_path = os.path.join(self.output_dir,
-                                                      f"{base_name}_{method}_{palette_size}greyscale.dds")
-                    convert_to_dds(greyscale_path, greyscale_dds_path)
-                    dds_files['greyscale'] = greyscale_dds_path
-
-                    # Convert Palette to DDS
-                    palette_dds_path = os.path.join(self.output_dir,
-                                                f"{base_name}_{method}_{palette_size}Palette.dds")
-                    convert_to_dds(palette_path, palette_dds_path, is_palette=True, palette_width=palette_width,
-                                        palette_height=palette_height)
-                    dds_files['palette'] = palette_dds_path
-
-                except Exception as e:
-                    logger.error(f"DDS conversion during save failed: {e}")
-                    QMessageBox.warning(self, "DDS Conversion Failed", f"Could not generate DDS files: {e}")
-
-            # Save color report
-            color_report_path = os.path.join(self.output_dir,
-                                             f"{base_name}_{method}_{palette_size}color_report.json")
-            self.save_color_report(self.palette_data['color_report_data'], color_report_path)
-
-            # Generate DDS if source was DDS
-            dds_files = {}
-            source_is_dds = self.current_image_path.lower().endswith('.dds')
-
-            if source_is_dds:
-                try:
-                    palette_width, palette_height = self.palette_data.get('palette_dimensions', (palette_size, 8))
-
-                    # Convert quantized to DDS
-                    quantized_dds_path = os.path.join(self.output_dir,
-                                                      f"{base_name}_{method}_{palette_size}quantized.dds")
-                    convert_to_dds(quantized_path, quantized_dds_path)
-                    dds_files['quantized'] = quantized_dds_path
-
-                    # Convert greyscale to DDS
-                    greyscale_dds_path = os.path.join(self.output_dir,
-                                                      f"{base_name}_{method}_{palette_size}greyscale.dds")
-                    convert_to_dds(greyscale_path, greyscale_dds_path)
-                    dds_files['greyscale'] = greyscale_dds_path
-
-                    # Convert Palette to DDS
-                    palette_dds_path = os.path.join(self.output_dir,
-                                                f"{base_name}_{method}_{palette_size}Palette.dds")
-                    convert_to_dds(palette_path, palette_dds_path, is_palette=True, palette_width=palette_width,
-                                        palette_height=palette_height)
-                    dds_files['palette'] = palette_dds_path
-
-                except Exception as e:
-                    logger.error(f"DDS conversion during save failed: {e}")
-                    QMessageBox.warning(self, "DDS Conversion Failed", f"Could not generate DDS files: {e}")
-
-            # Save metadata
-            metadata = {
-                'timestamp': datetime.now().isoformat(),
-                'original_image': self.current_image_path,
-                'quantization_method': method,
-                'palette_size': palette_size,
-                'working_resolution': self.quantized_data.get('working_resolution'),
-                'base_original_dimensions': f"{self.quantized_data.get('base_original_dimensions', self.quantized_data.get('dimensions', (0, 0)))[0]}x{self.quantized_data.get('base_original_dimensions', self.quantized_data.get('dimensions', (0, 0)))[1]}",
-                'base_processed_dimensions': f"{self.quantized_data.get('dimensions', (0, 0))[0]}x{self.quantized_data.get('dimensions', (0, 0))[1]}",
-                'num_blocks': self.palette_data.get('num_blocks', 1),
-                'block_sources': self.palette_data.get('block_sources', ['base']),
-                'output_files': {
-                    'quantized': quantized_path,
-                    'greyscale': greyscale_path,
-                    'palette': palette_path,
-                    'color_report': color_report_path,
-                    **dds_files
-                }
-            }
-
-            metadata_path = os.path.join(self.output_dir,
-                                         f"{base_name}_{method}_{palette_size}metadata.json")
-            with open(metadata_path, 'w') as f:
-                json.dump(metadata, f, indent=2)
-
-            # Show success message
-            file_list = "\n".join([f"• {os.path.basename(path)}" for path in [
-                quantized_path, greyscale_path, palette_path, color_report_path, metadata_path
-            ] + list(dds_files.values())])
-
-            QMessageBox.information(self, "Save Complete",
-                                    f"All files saved successfully!\n\n{file_list}")
-
-            logger.info("✓ All files saved successfully!")
-
-        except Exception as e:
-            logger.error(f"Error saving files: {str(e)}", exc_info=True)
-            QMessageBox.critical(self, "Save Error", f"Error saving files: {e}")
-
-    def save_color_report(self, color_report_data, file_path):
-        """Save color report data as JSON file"""
-        try:
-            # Convert color_report_data to JSON-serializable format
-            serializable_data = []
-            for color_data in color_report_data:
-                serializable_data.append({
-                    'grey_value': int(color_data['grey_value']),
-                    'color_rgb': [
-                        int(color_data['color_rgb'][0]),
-                        int(color_data['color_rgb'][1]),
-                        int(color_data['color_rgb'][2])
-                    ],
-                    'frequency': int(color_data['frequency']),
-                    'frequency_percent': float(color_data['frequency_percent'])
-                })
-
-            # Create a structured report
-            report = {
-                'timestamp': datetime.now().isoformat(),
-                'summary': {
-                    'total_colors': len(serializable_data),
-                    'most_used_colors': sorted(serializable_data, key=lambda x: x['frequency'], reverse=True)[:10],
-                    'least_used_colors': sorted(serializable_data, key=lambda x: x['frequency'])[:10]
-                },
-                'color_mapping': serializable_data
-            }
-
-            with open(file_path, 'w') as f:
-                json.dump(report, f, indent=2)
-
-            logger.debug(f"Color report saved to: {file_path}")
-        except Exception as e:
-            logger.error(f"Error saving color report: {str(e)}")
-            raise

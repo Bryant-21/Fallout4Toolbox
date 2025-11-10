@@ -14,7 +14,6 @@ from qfluentwidgets import (
 
 from help.mip_help import MipHelp
 from settings.basic_settings import BasicSettings
-from src.palette.palette_engine import load_image
 from src.utils.appconfig import cfg
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
