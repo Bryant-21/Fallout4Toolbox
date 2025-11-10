@@ -15,7 +15,6 @@ from qfluentwidgets import (
 )
 
 from help.unnif_help import NifUVHelp
-from palette.palette_engine import load_image
 from settings.basic_settings import BasicSettings
 from src.utils.appconfig import cfg
 from src.utils.helpers import BaseWidget
@@ -23,10 +22,12 @@ from src.utils.icons import CustomIcons
 from src.utils.imageutils import dilation_fill_static
 from src.utils.logging_utils import logger
 from src.utils.capabilities import CAPABILITIES
+from src.utils.dds_utils import load_image
+
 if CAPABILITIES["mip_flooding"]:
     from src.utils.mipflooding import _apply_mip_flooding_to_png
 from src.utils.nifutils import DDS_DIFFUSE_RE, remove_padding_from_texture_using_nif_uv
-from utils.capabilities import CAPABILITIES
+from src.utils.capabilities import CAPABILITIES
 from src.utils.chainner_utils import run_chainner_directory
 from src.utils.appconfig import cfg as _cfg
 
@@ -305,7 +306,7 @@ class UVPaddingRemoverWidget(BaseWidget):
             except Exception:
                 pass
         try:
-            orig = load_image(file_path, 'RGBA')
+            orig = load_image(file_path)
             self.current_original = orig
             self.current_texture_path = file_path
             self._display_on_label(orig, self.original_label)

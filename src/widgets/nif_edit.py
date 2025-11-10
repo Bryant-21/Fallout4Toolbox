@@ -16,7 +16,6 @@ from qfluentwidgets import (
 )
 
 from help.nif_help import NifHelp
-from palette.palette_engine import load_image
 from settings.basic_settings import BasicSettings
 from src.utils.appconfig import cfg
 from src.utils.capabilities import CAPABILITIES
@@ -24,47 +23,19 @@ from src.utils.cards import ComboBoxSettingsCard
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from utils.imageutils import dilation_fill_static
+from src.utils.dds_utils import load_image
+from src.utils.imageutils import dilation_fill_static
 
 if CAPABILITIES["mip_flooding"]:
-    from utils.mipflooding import _apply_mip_flooding_to_png
+    from src.utils.mipflooding import _apply_mip_flooding_to_png
 
-from utils.nifutils import load_nif, rasterize_uv_mask
+from src.utils.nifutils import load_nif, rasterize_uv_mask, collect_shape_uv_sets, build_uv_entries_for_nif, maybe_fix_quarter_uv
 from src.utils.chainner_utils import run_chainner, get_or_download_model
 
 
 def _collect_shape_uv_sets(shape: Any) -> List[List[Tuple[float, float]]]:
-    """
-    Return a list of UV sets for the given shape.
-    Tries multiple attribute layouts to be robust against nifly variations.
-    """
-    # Common case: shape.uvs is a flat list for the primary set
-    uvs_attr = getattr(shape, 'uvs', None)
-    if uvs_attr is None:
-        return []
-
-    # If it's already a list of (u,v) tuples → single set
-    if len(uvs_attr) > 0 and isinstance(uvs_attr[0], (tuple, list)) and \
-            len(uvs_attr[0]) == 2 and not isinstance(uvs_attr[0][0], (tuple, list)):
-        return [list(map(lambda p: (float(p[0]), float(p[1])), uvs_attr))]
-
-    # If it's a list of sets (list[list[(u,v)]])
-    if len(uvs_attr) > 0 and isinstance(uvs_attr[0], (list, tuple)) and \
-            len(uvs_attr[0]) > 0 and isinstance(uvs_attr[0][0], (list, tuple)):
-        sets: List[List[Tuple[float, float]]] = []
-        for s in uvs_attr:
-            sets.append([ (float(p[0]), float(p[1])) for p in s ])
-        return sets
-
-    # Some nifly builds expose shape.uv_sets
-    uv_sets = getattr(shape, 'uv_sets', None)
-    if uv_sets:
-        sets2: List[List[Tuple[float, float]]] = []
-        for s in uv_sets:
-            sets2.append([ (float(p[0]), float(p[1])) for p in s ])
-        return sets2
-
-    return []
+    """Backwards wrapper; kept for compatibility while delegating to nifutils."""
+    return collect_shape_uv_sets(shape)
 
 
 def _read_uvw_file(path: Path) -> Tuple[List[Tuple[float, float]], List[Tuple[int, int, int]]]:
@@ -236,36 +207,7 @@ class SingleModelUVPadWidget(BaseWidget):
     # ----- Core logic -----
     def _refresh_uv_set_count(self) -> None:
         # Build user-friendly list of UV sets grouped by diffuse texture name
-        self._uv_entries = []
-        try:
-            if self.model_path and self.model_path.suffix.lower() == '.nif':
-                nif = load_nif(self.model_path)
-                shapes = list(getattr(nif, 'shapes', []))
-                # key: (diffuse_str, uv_index) -> list[int] shape indices
-                groups = {}
-                for si, shape in enumerate(shapes):
-                    sets = _collect_shape_uv_sets(shape)
-                    if not sets:
-                        continue
-                    tex_slots = shape.textures if hasattr(shape, 'textures') else None
-                    if not tex_slots:
-                        continue
-                    if not tex_slots.get('Diffuse'):
-                        continue
-                    diffuse = str(tex_slots.get('Diffuse'))
-                    for ui, _ in enumerate(sets):
-                        key = (diffuse, ui)
-                        if key not in groups:
-                            groups[key] = []
-                        groups[key].append(si)
-                # Populate entries: (shape_indices, uv_index, label)
-                for (diffuse, ui), shape_indices in groups.items():
-                    label = f"{diffuse} - UV {ui}"
-                    self._uv_entries.append((shape_indices, ui, label))
-        except Exception as e:
-            traceback.print_exc()
-            logger.warning(f"Failed to inspect UV sets: {e}")
-            self._uv_entries = []
+        self._uv_entries = build_uv_entries_for_nif(self.model_path) if self.model_path else []
         # repopulate combobox
         self.card_uv_set.combox.clear()
         if self._uv_entries:
@@ -314,7 +256,7 @@ class SingleModelUVPadWidget(BaseWidget):
                             continue
                         uvs = sets[uv_index]
                         if(cfg.get(cfg.scale_uvs)):
-                            uvs = self._maybe_fix_quarter_uv(uvs)
+                            uvs = maybe_fix_quarter_uv(uvs)
                         mask = rasterize_uv_mask(tex_w, tex_h, uvs, tris, wrap=True)
                         combined = _IC.lighter(combined, mask)
                         any_mask = True

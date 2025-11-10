@@ -18,7 +18,7 @@ class QuantSettings(GenericSettings):
             CustomIcons.WIDTH.icon(),
             self.tr("Palette Size"),
             self.tr("Number of colors to quantize to"),
-            texts=["256", "128", "64", "32"],
+            texts=["128", "64", "32"],
             parent=self
         )
 
@@ -38,6 +38,15 @@ class QuantSettings(GenericSettings):
             parent=self
         )
 
+        # Quantize step dithering
+        self.quantize_dither_enable = SwitchSettingCard(
+            icon=CustomIcons.SPARK.icon(),
+            title=self.tr("Apply Dither To Quantized Image"),
+            content=self.tr("Enable Floyd–Steinberg dithering during quantization for fewer banding artifacts"),
+            configItem=cfg.ci_quantize_dither_enable
+        )
+
+
         # self.advanced_quant= SwitchSettingCard(
         #     icon=FIF.CUT,
         #     title=self.tr("Oversample Colors - Uses LAB Reduction to keep more unique colors"),
@@ -50,6 +59,7 @@ class QuantSettings(GenericSettings):
     def __initWidget(self):
         self.settings_group.addSettingCard(self.palette_size_card)
         self.settings_group.addSettingCard(self.method_card)
+        self.settings_group.addSettingCard(self.quantize_dither_enable)
         # self.settings_group.addSettingCard(self.advanced_quant)
         # add cards to group
         self.setupLayout()

@@ -1,4 +1,5 @@
 import os
+import traceback
 from typing import Optional
 
 import numpy as np
@@ -18,12 +19,13 @@ from qfluentwidgets import (
 
 from help.quantize_help import QuantizeHelp
 from settings.quant_settings import QuantSettings
-from src.palette.palette_engine import load_image, quantize_image, reduce_colors_lab_de00_with_hue_balance, remap_rgb_array_to_representatives
 from src.utils.appconfig import cfg
+from src.utils.cards import RadioSettingCard
+from src.utils.dds_utils import load_image
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from utils.cards import RadioSettingCard
+from src.utils.palette_utils import quantize_image
 
 
 class ImageQuantizerWidget(BaseWidget):
@@ -54,7 +56,7 @@ class ImageQuantizerWidget(BaseWidget):
             CustomIcons.WIDTH.icon(),
             self.tr("Colors"),
             self.tr("Number of colors to quantize to"),
-            texts=["256", "128", "64", "32"],
+            texts=["128", "64", "32", "16", "8"],
             parent=self
         )
 
@@ -197,7 +199,7 @@ class ImageQuantizerWidget(BaseWidget):
             except Exception:
                 pass
         try:
-            q_img, info = quantize_image(self.original_pil, method)
+            q_img = quantize_image(self.original_pil, method)
             # Mid-progress update
             try:
                 p = getattr(self, 'parent', None)
@@ -212,25 +214,17 @@ class ImageQuantizerWidget(BaseWidget):
             unique, counts = np.unique(arr.reshape(-1, 3), axis=0, return_counts=True)
             target = int(cfg.get(cfg.ci_default_palette_size))
             before = len(unique)
-            if before > target:
-                logger.debug(f"ImageQuantizer: reducing {before}→{target} with LAB/ΔE00 + hue balancing")
-                kept_reps, color_map, pad_candidates = reduce_colors_lab_de00_with_hue_balance(unique, counts, target)
-                arr = remap_rgb_array_to_representatives(arr, color_map)
-                rgb = Image.fromarray(arr.astype('uint8'), 'RGB')
-                after = len(np.unique(arr.reshape(-1, 3), axis=0))
-                logger.debug(f"ImageQuantizer: post-reduction unique colors = {after}")
-            else:
-                after = before
             self.quantized_pil = rgb
             self._display_on_label(self.quantized_pil, self.quantized_label)
             self.btn_save.setEnabled(True)
             InfoBar.success(
                 title=self.tr("Quantization complete"),
-                content=self.tr(f"{info.get('description', method)}; colors: {before}→{after} (target {target})"),
+                content=self.tr(f"colors: {before}→{q_img.getcolors().__len__()} (target {target})"),
                 duration=3000,
                 parent=self,
             )
         except Exception as e:
+            traceback.print_exc()
             logger.error(f"Quantization failed: {e}")
             QMessageBox.critical(self, self.tr("Error"), self.tr(f"Quantization failed: {e}"))
         finally:

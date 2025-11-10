@@ -9,7 +9,7 @@ from qfluentwidgets import ScrollArea, ExpandLayout
 
 from src.utils.appconfig import cfg
 from src.utils.cards import SpinSettingCard
-from utils.filesystem_utils import get_app_root
+from src.utils.filesystem_utils import get_app_root
 
 
 class GenericSettings(ScrollArea):

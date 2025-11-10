@@ -1,5 +1,6 @@
 scikit-image
 scikit-learn
+scipy-stubs
 pyside6
 PySide6-Fluent-Widgets
 imagequant

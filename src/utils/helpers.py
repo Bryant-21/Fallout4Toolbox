@@ -4,7 +4,7 @@ from PySide6.QtCore import Qt, QRect, QPropertyAnimation, QEasingCurve, QEvent
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette
 from PySide6.QtGui import QIcon, Qt
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QApplication, QLabel, QFrame, QSizePolicy
+    QWidget, QHBoxLayout, QVBoxLayout, QApplication, QLabel, QFrame, QSizePolicy, QLayout
 )
 from qfluentwidgets import NavigationInterface, FluentIconBase, NavigationItemPosition, NavigationTreeWidget, BodyLabel, \
     qrouter, CommandBar, Action
@@ -56,6 +56,10 @@ class BaseWidget(QFrame):
 
     def addToFrame(self, widget: QWidget) -> None:
         self.boxLayout.addWidget(widget)
+
+    def addToLayout(self, layout: QLayout) -> None:
+        self.boxLayout.addLayout(layout)
+
 
     def toggle_settings_drawer(self):
         self.settings_drawer.open_drawer()

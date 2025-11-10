@@ -1,12 +1,12 @@
 import os
 import re
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Any
 
 from PIL import ImageChops, Image, ImageDraw
 from io_scene_nifly.pynifly import NifFile
 from pathlib import Path
-from palette.palette_engine import load_image
 from src.utils.logging_utils import logger
+from src.utils.dds_utils import load_image
 
 # Ensure the Nifly DLL is loaded before using NifFile (works in dev and PyInstaller)
 try:
@@ -50,6 +50,143 @@ except Exception as _ex:
 
 
 DDS_DIFFUSE_RE = re.compile(r"_d\.dds$", re.IGNORECASE)
+
+
+def collect_shape_uv_sets(shape: Any) -> List[List[Tuple[float, float]]]:
+    """Return a list of UV sets for the given shape.
+
+    This mirrors the robust UV collection used in the NIF editor so it can be
+    shared with other widgets (e.g., palette creator). It attempts multiple
+    nifly layouts to support different builds.
+    """
+    uvs_attr = getattr(shape, 'uvs', None)
+    if uvs_attr is None:
+        return []
+
+    # If it's already a list of (u, v) tuples → single set
+    if len(uvs_attr) > 0 and isinstance(uvs_attr[0], (tuple, list)) and \
+            len(uvs_attr[0]) == 2 and not isinstance(uvs_attr[0][0], (tuple, list)):
+        return [list(map(lambda p: (float(p[0]), float(p[1])), uvs_attr))]
+
+    # If it's a list of sets (list[list[(u, v)]])
+    if len(uvs_attr) > 0 and isinstance(uvs_attr[0], (list, tuple)) and \
+            len(uvs_attr[0]) > 0 and isinstance(uvs_attr[0][0], (list, tuple)):
+        sets: List[List[Tuple[float, float]]] = []
+        for s in uvs_attr:
+            sets.append([(float(p[0]), float(p[1])) for p in s])
+        return sets
+
+    # Some nifly builds expose shape.uv_sets
+    uv_sets = getattr(shape, 'uv_sets', None)
+    if uv_sets:
+        sets2: List[List[Tuple[float, float]]] = []
+        for s in uv_sets:
+            sets2.append([(float(p[0]), float(p[1])) for p in s])
+        return sets2
+
+    return []
+
+
+def build_uv_entries_for_nif(nif_path: Path) -> List[Tuple[List[int], int, str]]:
+    """Collect grouped UV entries for a NIF, grouped by diffuse texture name.
+
+    Returns a list of tuples: (shape_indices, uv_index, label)
+    """
+    entries: List[Tuple[List[int], int, str]] = []
+    try:
+        if not nif_path or nif_path.suffix.lower() != '.nif':
+            return entries
+        nif = load_nif(nif_path)
+        shapes = list(getattr(nif, 'shapes', []))
+        groups = {}
+        for si, shape in enumerate(shapes):
+            sets = collect_shape_uv_sets(shape)
+            if not sets:
+                continue
+            tex_slots = shape.textures if hasattr(shape, 'textures') else None
+            if not tex_slots:
+                continue
+            diffuse = tex_slots.get('Diffuse') if hasattr(tex_slots, 'get') else None
+            if not diffuse:
+                continue
+            diffuse_str = str(diffuse)
+            for ui, _ in enumerate(sets):
+                key = (diffuse_str, ui)
+                groups.setdefault(key, []).append(si)
+        for (diffuse, ui), shape_indices in groups.items():
+            label = f"{diffuse} - UV {ui}"
+            entries.append((shape_indices, ui, label))
+    except Exception as e:
+        logger.warning(f"Failed to inspect UV sets: {e}")
+    return entries
+
+
+def maybe_fix_quarter_uv(uvs: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """Optional UV scaling helper (ported from nif_edit)."""
+    return [((float(u) - 0.5) * 2.0, (float(v) - 0.5) * 2.0) for (u, v) in uvs]
+
+
+def build_mask_from_nif(
+    nif_path: Path,
+    uv_entries: List[Tuple[List[int], int, str]],
+    selected_uv_index: int,
+    tex_w: int,
+    tex_h: int,
+    scale_uvs: bool = False,
+    wrap: bool = True,
+) -> Optional[Image.Image]:
+    """Build a combined UV mask for the given NIF and UV selection."""
+    if not nif_path:
+        return None
+    try:
+        nif = load_nif(nif_path)
+        shapes = list(getattr(nif, 'shapes', []))
+        idx = int(selected_uv_index)
+        # Preferred path: use provided UV entries
+        if 0 <= idx < len(uv_entries):
+            entry = uv_entries[idx]
+            shape_indices, uv_index, _label = entry
+            combined = Image.new('L', (tex_w, tex_h), 0)
+            any_mask = False
+            for si in shape_indices:
+                if not (0 <= si < len(shapes)):
+                    continue
+                shape = shapes[si]
+                tris = getattr(shape, 'tris', None)
+                if not tris:
+                    continue
+                sets = collect_shape_uv_sets(shape)
+                if not sets or not (0 <= uv_index < len(sets)):
+                    continue
+                uvs = sets[uv_index]
+                if scale_uvs:
+                    uvs = maybe_fix_quarter_uv(uvs)
+                mask = rasterize_uv_mask(tex_w, tex_h, uvs, tris, wrap=wrap)
+                combined = ImageChops.lighter(combined, mask)
+                any_mask = True
+            if any_mask:
+                return combined
+
+        # Fallback: iterate UV sets globally if entries missing/out of date
+        remaining = max(0, idx)
+        for shape in shapes:
+            tris = getattr(shape, 'tris', None)
+            if not tris:
+                continue
+            sets = collect_shape_uv_sets(shape)
+            if not sets:
+                continue
+            if remaining < len(sets):
+                uvs = sets[remaining]
+                if scale_uvs:
+                    uvs = maybe_fix_quarter_uv(uvs)
+                return rasterize_uv_mask(tex_w, tex_h, uvs, tris, wrap=wrap)
+            else:
+                remaining -= len(sets)
+    except Exception as e:
+        logger.warning(f"Failed to build UV mask: {e}")
+        return None
+    return None
 
 def uv_to_px(uv, w, h, wrap=True):
     u, v = uv
@@ -172,7 +309,7 @@ def remove_padding_from_texture_using_nif_uv(tex_path: Path, data_root: Path, wr
 
 
     # Load texture (RGBA)
-    img = load_image(str(tex_path), 'RGBA')
+    img = load_image(str(tex_path))
     w, h = img.size
 
     nif_path = try_find_nif_for_texture(tex_path, data_root)

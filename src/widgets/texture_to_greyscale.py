@@ -6,23 +6,22 @@ from PIL import Image
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QFileDialog, QGridLayout, QMessageBox, QVBoxLayout
+    QWidget, QLabel, QFileDialog, QGridLayout, QMessageBox
 )
 from qfluentwidgets import (
     PushSettingCard,
     PrimaryPushButton,
     InfoBar,
-    FluentIcon as FIF,
-    PushButton
+    FluentIcon as FIF
 )
 
 from help.convertpalette_help import PaletteConvertHelp
 from settings.palette_settings import PaletteSettings
-from src.palette.palette_engine import load_image, convert_to_dds
-from src.utils.helpers import BaseWidget
-from src.utils.logging_utils import logger
 from src.utils.appconfig import cfg
+from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
+from src.utils.logging_utils import logger
+from src.utils.dds_utils import convert_to_dds, load_image
 
 
 class ConvertToPaletteWorker(QThread):
@@ -43,7 +42,7 @@ class ConvertToPaletteWorker(QThread):
                 self.finished.emit({'processed': 0, 'skipped': 0, 'failed': 0})
                 return
             # Load palette image once
-            palette_image = load_image(self.palette_path, format='RGB')
+            palette_image = load_image(self.palette_path)
             palette_p_image = palette_image.convert('P', palette=Image.Palette.ADAPTIVE)
             processed = skipped = failed = 0
             first_bw = None
@@ -52,7 +51,7 @@ class ConvertToPaletteWorker(QThread):
             for i, tex_path in enumerate(self.texture_paths, start=1):
                 try:
                     # Load texture
-                    img = load_image(tex_path, format='RGB')
+                    img = load_image(tex_path)
                     # Quantize using palette
                     q_img = img.quantize(palette=palette_p_image, dither=Image.Dither.NONE)
                     q_rgb = q_img.convert('RGB')
@@ -200,7 +199,7 @@ class ConvertToPaletteWidget(BaseWidget):
             return
         try:
             # use loader to support DDS and other formats
-            self.palette_image = load_image(path, format='RGB')
+            self.palette_image = load_image(path)
             cfg.set(cfg.base_palette_cfg, path)
             self.palette_card.setContent(path)
             self.palette_path = path
@@ -313,7 +312,7 @@ class ConvertToPaletteWidget(BaseWidget):
     # -------------- Core processing ---------------
     def _process_single(self, tex_path: str):
         # Load texture
-        img = load_image(tex_path, format='RGB')
+        img = load_image(tex_path)
         # Quantize using the provided palette image per PIL docs
         pal_src = self._ensure_palette_image()
         q_img = img.quantize(palette=pal_src, dither=Image.Dither.NONE)
