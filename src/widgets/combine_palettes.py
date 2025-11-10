@@ -185,7 +185,7 @@ class CombinePalettesWorker(QThread):
             if BulkPaletteWorker is None:
                 raise Exception("BulkPaletteWorker not available to reuse palette reduction. Import failed.")
             temp_worker = BulkPaletteWorker(self.directory, '', self.output_dir, palette_size=self.target_palette_size)
-            palette_colors, color_map, pad_candidates = temp_worker._build_global_palette(global_counter, target_size=self.target_palette_size, color_coverage=color_image_coverage)
+            palette_colors, color_map, pad_candidates = temp_worker.build_global_palette(global_counter, target_size=self.target_palette_size, color_coverage=color_image_coverage)
 
             # Ensure exact target size with padding and perceptual sort like BulkPaletteWorker
             colors_np = np.array(palette_colors, dtype=np.uint8)

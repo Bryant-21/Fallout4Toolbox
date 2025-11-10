@@ -134,6 +134,7 @@ class BulkPaletteWorker(QThread):
 
                 def _per_image_task(item):
                     try:
+                        logger.debug(f"Starting Per Image Processing {os.path.basename(item['path'])}")
                         # Build per-image palette (<= target size) from the image's RGB array
                         pcolors, cmap, pad_cands = build_palette_from_rgb_array(item['array_rgb'], target_size=self.palette_size)
                         pal_np = np.array(pcolors, dtype=np.uint8)
@@ -160,9 +161,9 @@ class BulkPaletteWorker(QThread):
                                     pal_np = np.vstack([pal_np, pal_np[:max(1, self.palette_size - len(pal_np))]])
                                 pal_np = pal_np[:self.palette_size]
                         # Sort perceptually
-                        logger.debug(f"Starting Color Sort")
+                        logger.debug(f"Starting Color Sort {os.path.basename(item['path'])}")
                         pal_sorted = np.array(perceptual_color_sort([tuple(c) for c in pal_np]), dtype=np.uint8)
-                        logger.debug(f"Colors Sorted")
+                        logger.debug(f"Colors Sorted {os.path.basename(item['path'])}")
 
                         # Map image to indices and save greyscale + colorized + per-image palette
                         arr = item['array_rgb']
@@ -279,175 +280,175 @@ class BulkPaletteWorker(QThread):
                     'images': [r for r in results_list if r is not None]
                 })
                 return
+            else:
+                # SINGLE-PALETTE MODE
+                self.progress.emit(50, f"Merging {len(global_unique_colors)} colors down to ≤ {self.palette_size}...")
 
-            # SINGLE-PALETTE MODE
-            self.progress.emit(50, f"Merging {len(global_unique_colors)} colors down to ≤ {self.palette_size}...")
+                # Step 2: Build global palette ≤ palette_size by merging similar colors
+                global_colors_arr = np.array(list(global_unique_colors), dtype=np.uint8) if global_unique_colors else np.zeros((0,3), dtype=np.uint8)
+                palette_colors, color_map, pad_candidates = build_palette_from_rgb_array(global_colors_arr, target_size=self.palette_size)
 
-            # Step 2: Build global palette ≤ palette_size by merging similar colors
-            global_colors_arr = np.array(list(global_unique_colors), dtype=np.uint8) if global_unique_colors else np.zeros((0,3), dtype=np.uint8)
-            palette_colors, color_map, pad_candidates = build_palette_from_rgb_array(global_colors_arr, target_size=self.palette_size)
+                # Step 3: Ensure exactly palette_size (pad if needed), and sort perceptually
+                colors_np = np.array(palette_colors, dtype=np.uint8)
+                if len(colors_np) < self.palette_size:
+                    # Prefer to pad using high-scoring dropped clusters to preserve diversity
+                    try:
+                        if pad_candidates:
+                            seen = {tuple(map(int, c)) for c in colors_np.tolist()}
+                            to_add = []
+                            for c in pad_candidates:
+                                t = tuple(int(x) for x in c)
+                                if t not in seen:
+                                    to_add.append(t)
+                                    seen.add(t)
+                                    if len(colors_np) + len(to_add) >= self.palette_size:
+                                        break
+                            if to_add:
+                                colors_np = np.vstack([colors_np, np.array(to_add, dtype=np.uint8)])
+                        # If still short, fall back to existing padding strategies
+                        if len(colors_np) < self.palette_size:
+                            colors_np = pad_colors_to_target(colors_np, sample_img_for_padding, self.palette_size)
+                    except Exception as e:
+                        logger.warning(f"Padding palette failed: {e}")
+                        # Fallback pad by repeating
+                        while len(colors_np) < self.palette_size:
+                            colors_np = np.vstack([colors_np, colors_np[:max(1, self.palette_size - len(colors_np))]])
+                        colors_np = colors_np[:self.palette_size]
 
-            # Step 3: Ensure exactly palette_size (pad if needed), and sort perceptually
-            colors_np = np.array(palette_colors, dtype=np.uint8)
-            if len(colors_np) < self.palette_size:
-                # Prefer to pad using high-scoring dropped clusters to preserve diversity
-                try:
-                    if pad_candidates:
-                        seen = {tuple(map(int, c)) for c in colors_np.tolist()}
-                        to_add = []
-                        for c in pad_candidates:
-                            t = tuple(int(x) for x in c)
-                            if t not in seen:
-                                to_add.append(t)
-                                seen.add(t)
-                                if len(colors_np) + len(to_add) >= self.palette_size:
-                                    break
-                        if to_add:
-                            colors_np = np.vstack([colors_np, np.array(to_add, dtype=np.uint8)])
-                    # If still short, fall back to existing padding strategies
-                    if len(colors_np) < self.palette_size:
-                        colors_np = pad_colors_to_target(colors_np, sample_img_for_padding, self.palette_size)
-                except Exception as e:
-                    logger.warning(f"Padding palette failed: {e}")
-                    # Fallback pad by repeating
-                    while len(colors_np) < self.palette_size:
-                        colors_np = np.vstack([colors_np, colors_np[:max(1, self.palette_size - len(colors_np))]])
-                    colors_np = colors_np[:self.palette_size]
+                # sort perceptually
+                sorted_colors = perceptual_color_sort([tuple(c) for c in colors_np])
+                palette_np = np.array(sorted_colors, dtype=np.uint8)
 
-            # sort perceptually
-            sorted_colors = perceptual_color_sort([tuple(c) for c in colors_np])
-            palette_np = np.array(sorted_colors, dtype=np.uint8)
+                # Step 4: Remap each quantized image colors to palette indices, and save greyscale
+                self.progress.emit(70, "Remapping images to palette indices...")
+                palette_index_lut = {tuple(color): i for i, color in enumerate(palette_np.tolist())}
 
-            # Step 4: Remap each quantized image colors to palette indices, and save greyscale
-            self.progress.emit(70, "Remapping images to palette indices...")
-            palette_index_lut = {tuple(color): i for i, color in enumerate(palette_np.tolist())}
+                # Precompute palette for nearest search
+                pal_float = palette_np.astype(np.int16)
 
-            # Precompute palette for nearest search
-            pal_float = palette_np.astype(np.int16)
+                results_greyscale = []
 
-            results_greyscale = []
+                def _step4_task(item):
+                    arr = item['array_rgb']
+                    # Build per-image exact LUT from unique colors only
+                    lut_exact = {}
+                    local_colors = item.get('unique_set', set())
+                    for lc in local_colors:
+                        rep = color_map.get(tuple(lc))
+                        if rep is None:
+                            nearest_idx = nearest_palette_index(np.array(lc, dtype=np.uint8), pal_float)
+                            lut_exact[tuple(int(x) for x in lc)] = int(nearest_idx)
+                        else:
+                            lut_exact[tuple(int(x) for x in lc)] = int(palette_index_lut[tuple(rep)])
+                    grey_indices = map_rgb_array_to_palette_indices(arr, lut_exact, pal_float).astype(np.uint8)
 
-            def _step4_task(item):
-                arr = item['array_rgb']
-                # Build per-image exact LUT from unique colors only
-                lut_exact = {}
-                local_colors = item.get('unique_set', set())
-                for lc in local_colors:
-                    rep = color_map.get(tuple(lc))
-                    if rep is None:
-                        nearest_idx = nearest_palette_index(np.array(lc, dtype=np.uint8), pal_float)
-                        lut_exact[tuple(int(x) for x in lc)] = int(nearest_idx)
+                    src_ext = os.path.splitext(item['path'])[1].lower()
+                    rel_name = os.path.splitext(os.path.basename(item['path']))[0]
+                    base_with_group = f"{rel_name}_{self.group_name}" if self.group_name else rel_name
+                    grey_base = f"{base_with_group}_greyscale"
+                    color_base = f"{base_with_group}_quant"
+
+                    if src_ext == '.dds':
+                        tmp_grey_png = os.path.join(self.output_dir, grey_base + '.png')
+                        Image.fromarray(grey_indices, mode='L').save(tmp_grey_png)
+                        grey_out = os.path.join(self.output_dir, grey_base + '.dds')
+                        try:
+                            convert_to_dds(tmp_grey_png, grey_out, is_palette=False)
+                        finally:
+                            try:
+                                os.remove(tmp_grey_png)
+                            except Exception:
+                                pass
+
+                        color_arr = palette_np[grey_indices]
+                        tmp_color_png = os.path.join(self.output_dir, color_base + '.png')
+                        Image.fromarray(color_arr.astype(np.uint8), mode='RGB').save(tmp_color_png)
+                        color_out = os.path.join(self.output_dir, color_base + '.dds')
+                        try:
+                            convert_to_dds(tmp_color_png, color_out, is_palette=False)
+                        finally:
+                            try:
+                                os.remove(tmp_color_png)
+                            except Exception:
+                                pass
                     else:
-                        lut_exact[tuple(int(x) for x in lc)] = int(palette_index_lut[tuple(rep)])
-                grey_indices = map_rgb_array_to_palette_indices(arr, lut_exact, pal_float).astype(np.uint8)
+                        grey_out = os.path.join(self.output_dir, grey_base + src_ext)
+                        Image.fromarray(grey_indices, mode='L').save(grey_out)
+                        color_arr = palette_np[grey_indices]
+                        color_out = os.path.join(self.output_dir, color_base + src_ext)
+                        Image.fromarray(color_arr.astype(np.uint8), mode='RGB').save(color_out)
 
-                src_ext = os.path.splitext(item['path'])[1].lower()
-                rel_name = os.path.splitext(os.path.basename(item['path']))[0]
-                base_with_group = f"{rel_name}_{self.group_name}" if self.group_name else rel_name
-                grey_base = f"{base_with_group}_greyscale"
-                color_base = f"{base_with_group}_quant"
+                    return {
+                        'source': item['path'],
+                        'greyscale_path': grey_out,
+                        'color_path': color_out,
+                    }
 
-                if src_ext == '.dds':
-                    tmp_grey_png = os.path.join(self.output_dir, grey_base + '.png')
-                    Image.fromarray(grey_indices, mode='L').save(tmp_grey_png)
-                    grey_out = os.path.join(self.output_dir, grey_base + '.dds')
+                # Run Step 4 in parallel threads
+                total4 = len(per_image_quant)
+                completed4 = 0
+                max_workers4 = max(1, int(cfg.get(cfg.threads_cfg)))
+                with ThreadPoolExecutor(max_workers=max_workers4) as ex:
+                    future_map4 = {ex.submit(_step4_task, item): item for item in per_image_quant}
+                    for fut in as_completed(future_map4):
+                        item = future_map4[fut]
+                        try:
+                            res = fut.result()
+                        except Exception as e:
+                            raise Exception(f"Failed saving {os.path.basename(item['path'])}: {e}")
+                        results_greyscale.append(res)
+                        completed4 += 1
+                        pct = 70 + int(completed4 / max(1, total4) * 20)
+                        self.progress.emit(pct, f"Saved greyscale and colorized for {os.path.basename(item['path'])}")
+
+                # Step 5: Save palette image matching input type rule
+                self.progress.emit(92, "Saving palette image...")
+                palette_width = self.palette_size
+                palette_row_height = cfg.get(cfg.ci_palette_row_height) if hasattr(cfg, 'ci_palette_row_height') else 8
+                palette_height = next_power_of_2(palette_row_height)
+                pal_img_arr = np.zeros((palette_height, palette_width, 3), dtype=np.uint8)
+                for row in range(palette_height):
+                    pal_img_arr[row, :palette_width] = palette_np
+
+                palette_img = Image.fromarray(pal_img_arr, 'RGB')
+
+                # Decide palette filename and extension
+                folder_name = os.path.basename(os.path.normpath(self.directory)) or 'output'
+                exts_set = set([os.path.splitext(p)[1].lower() for p in image_paths])
+                if len(exts_set) == 1:
+                    palette_ext = next(iter(exts_set))
+                else:
+                    palette_ext = '.png'
+
+                # Use group name if provided, otherwise fall back to folder name
+                if self.group_name:
+                    palette_base = os.path.join(self.output_dir, f"{self.group_name}_palette")
+                else:
+                    palette_base = os.path.join(self.output_dir, f"palette_{folder_name}")
+
+                if palette_ext == '.dds':
+                    # write temp png then convert to DDS
+                    tmp_png = palette_base + '.png'
+                    palette_img.save(tmp_png)
+                    palette_out = palette_base + '.dds'
                     try:
-                        convert_to_dds(tmp_grey_png, grey_out, is_palette=False)
+                        convert_to_dds(tmp_png, palette_out, is_palette=True, palette_width=palette_width, palette_height=palette_height)
                     finally:
                         try:
-                            os.remove(tmp_grey_png)
-                        except Exception:
-                            pass
-
-                    color_arr = palette_np[grey_indices]
-                    tmp_color_png = os.path.join(self.output_dir, color_base + '.png')
-                    Image.fromarray(color_arr.astype(np.uint8), mode='RGB').save(tmp_color_png)
-                    color_out = os.path.join(self.output_dir, color_base + '.dds')
-                    try:
-                        convert_to_dds(tmp_color_png, color_out, is_palette=False)
-                    finally:
-                        try:
-                            os.remove(tmp_color_png)
+                            os.remove(tmp_png)
                         except Exception:
                             pass
                 else:
-                    grey_out = os.path.join(self.output_dir, grey_base + src_ext)
-                    Image.fromarray(grey_indices, mode='L').save(grey_out)
-                    color_arr = palette_np[grey_indices]
-                    color_out = os.path.join(self.output_dir, color_base + src_ext)
-                    Image.fromarray(color_arr.astype(np.uint8), mode='RGB').save(color_out)
+                    palette_out = palette_base + palette_ext
+                    palette_img.save(palette_out)
 
-                return {
-                    'source': item['path'],
-                    'greyscale_path': grey_out,
-                    'color_path': color_out,
-                }
+                self.progress.emit(100, "Bulk palette generation complete")
 
-            # Run Step 4 in parallel threads
-            total4 = len(per_image_quant)
-            completed4 = 0
-            max_workers4 = max(1, int(cfg.get(cfg.threads_cfg)))
-            with ThreadPoolExecutor(max_workers=max_workers4) as ex:
-                future_map4 = {ex.submit(_step4_task, item): item for item in per_image_quant}
-                for fut in as_completed(future_map4):
-                    item = future_map4[fut]
-                    try:
-                        res = fut.result()
-                    except Exception as e:
-                        raise Exception(f"Failed saving {os.path.basename(item['path'])}: {e}")
-                    results_greyscale.append(res)
-                    completed4 += 1
-                    pct = 70 + int(completed4 / max(1, total4) * 20)
-                    self.progress.emit(pct, f"Saved greyscale and colorized for {os.path.basename(item['path'])}")
-
-            # Step 5: Save palette image matching input type rule
-            self.progress.emit(92, "Saving palette image...")
-            palette_width = self.palette_size
-            palette_row_height = cfg.get(cfg.ci_palette_row_height) if hasattr(cfg, 'ci_palette_row_height') else 8
-            palette_height = next_power_of_2(palette_row_height)
-            pal_img_arr = np.zeros((palette_height, palette_width, 3), dtype=np.uint8)
-            for row in range(palette_height):
-                pal_img_arr[row, :palette_width] = palette_np
-
-            palette_img = Image.fromarray(pal_img_arr, 'RGB')
-
-            # Decide palette filename and extension
-            folder_name = os.path.basename(os.path.normpath(self.directory)) or 'output'
-            exts_set = set([os.path.splitext(p)[1].lower() for p in image_paths])
-            if len(exts_set) == 1:
-                palette_ext = next(iter(exts_set))
-            else:
-                palette_ext = '.png'
-
-            # Use group name if provided, otherwise fall back to folder name
-            if self.group_name:
-                palette_base = os.path.join(self.output_dir, f"{self.group_name}_palette")
-            else:
-                palette_base = os.path.join(self.output_dir, f"palette_{folder_name}")
-            
-            if palette_ext == '.dds':
-                # write temp png then convert to DDS
-                tmp_png = palette_base + '.png'
-                palette_img.save(tmp_png)
-                palette_out = palette_base + '.dds'
-                try:
-                    convert_to_dds(tmp_png, palette_out, is_palette=True, palette_width=palette_width, palette_height=palette_height)
-                finally:
-                    try:
-                        os.remove(tmp_png)
-                    except Exception:
-                        pass
-            else:
-                palette_out = palette_base + palette_ext
-                palette_img.save(palette_out)
-
-            self.progress.emit(100, "Bulk palette generation complete")
-
-            self.completed.emit({
-                'palette_path': palette_out,
-                'palette_colors': palette_np.tolist(),
-                'images': results_greyscale
-            })
+                self.completed.emit({
+                    'palette_path': palette_out,
+                    'palette_colors': palette_np.tolist(),
+                    'images': results_greyscale
+                })
 
         except Exception as e:
             logger.error(f"BulkPaletteWorker error: {e}", exc_info=True)
@@ -521,7 +522,8 @@ class BulkPaletteWorker(QThread):
         new_size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
         return img.resize(new_size, Image.Resampling.LANCZOS)
 
-    def _build_global_palette(self, colors_source: np.ndarray, target_size: int):
+    @staticmethod
+    def build_global_palette(colors_source: np.ndarray, target_size: int):
         # Accepts an RGB array (HxWx3 or Nx3) and merges similar colors until <= target_size
         # 1) Deduplicate colors
         if colors_source is None:
@@ -620,43 +622,6 @@ class BulkPaletteWorker(QThread):
 
         return kept_reps, color_map, pad_candidates
 
-    @staticmethod
-    def _nearest_palette_index(color: np.ndarray, palette_int16: np.ndarray) -> int:
-        # Euclidean distance in RGB
-        diff = palette_int16 - color.astype(np.int16)
-        d2 = np.sum(diff * diff, axis=1)
-        return int(np.argmin(d2))
-
-    def _map_rgb_array_to_palette_indices(self, arr_rgb: np.ndarray, lut_exact: dict, palette_int16: np.ndarray) -> np.ndarray:
-        h, w = arr_rgb.shape[:2]
-        flat = arr_rgb.reshape(-1, 3)
-        # First try exact mapping for speed
-        indices = np.full((flat.shape[0],), 0, dtype=np.uint16)
-        unmatched_mask = np.ones((flat.shape[0],), dtype=bool)
-        for i in range(flat.shape[0]):
-            t = tuple(int(x) for x in flat[i])
-            if t in lut_exact:
-                indices[i] = lut_exact[t]
-                unmatched_mask[i] = False
-        # For unmatched, do nearest search
-        if unmatched_mask.any():
-            cand = flat[unmatched_mask]
-            pal = palette_int16
-            # Vectorized distance
-            # Expand dims: [N,1,3] vs [1,P,3] -> broadcast to [N,P,3]
-            # To save memory, process in chunks
-            chunk = 100000
-            start = 0
-            where_idx = np.where(unmatched_mask)[0]
-            while start < cand.shape[0]:
-                end = min(start + chunk, cand.shape[0])
-                c = cand[start:end].astype(np.int16)[:, None, :]
-                diff = pal[None, :, :] - c
-                d2 = np.sum(diff * diff, axis=2)  # [nchunk, P]
-                nearest = np.argmin(d2, axis=1)
-                indices[where_idx[start:end]] = nearest.astype(np.uint16)
-                start = end
-        return indices.reshape(h, w)
 
 
 class BulkPaletteWidget(BaseWidget):
@@ -792,6 +757,9 @@ class BulkPaletteWidget(BaseWidget):
             except Exception:
                 pass
         self.info_label.setText(self.tr("Starting..."))
+        # Resolve boolean for single vs multiple palette correctly from ConfigItem
+        sp_raw = cfg.get(cfg.ci_single_palette)
+        sp_val = sp_raw.value if hasattr(sp_raw, 'value') else sp_raw
         self.worker = BulkPaletteWorker(
             directory=self.directory,
             suffix_filter=cfg.get(cfg.ci_suffix),
@@ -801,7 +769,7 @@ class BulkPaletteWidget(BaseWidget):
             palette_size=cfg.get(cfg.ci_default_palette_size),
             exclude_filter=cfg.get(cfg.ci_exclude),
             group_name=cfg.get(cfg.ci_group_name),
-            single_palette=bool(cfg.get(cfg.ci_single_palette))
+            single_palette=bool(sp_val)
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.completed.connect(self._on_completed)

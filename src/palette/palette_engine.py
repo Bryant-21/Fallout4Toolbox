@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 from PIL.Image import Quantize, Palette
 from skimage.color import rgb2lab, deltaE_ciede2000
-from numba import njit
+from numba import njit, prange
 import numpy as np
 from src.utils.appconfig import cfg, TEXCONV_EXE
 from src.utils.logging_utils import logger
@@ -456,12 +456,13 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=256,
         raise Exception(f"DDS conversion error: {str(e)}")
 
 
+@njit(cache=True, fastmath=True)
 def next_power_of_2(n):
     """Calculate the next power of 2 that is greater than or equal to n"""
     if n <= 1:
         return 1
-    # Calculate the position of the most significant bit
     power = 1
+    # simple loop; numba will JIT this tight integer loop
     while power < n:
         power *= 2
     return power
@@ -472,15 +473,21 @@ def rgb_to_lab_array(colors):
     lab = rgb2lab(rgb.reshape(-1, 1, 3)).reshape(-1, 3)
     return lab
 
+@njit(fastmath=True, cache=True)
 def hue_angle_from_ab(a, b):
-    return (np.degrees(np.arctan2(b, a)) + 360.0) % 360.0
+    # Use arctan2 for correct quadrant; convert to degrees manually for numba compatibility
+    angle = np.arctan2(b, a) * (180.0 / np.pi)
+    if angle < 0.0:
+        angle += 360.0
+    return angle
 
+@njit(fastmath=True, cache=True)
 def unwrap_hue(hues):
     hues_sorted = np.sort(hues)
-    diffs = np.diff(np.concatenate([hues_sorted, hues_sorted[:1] + 360]))
-    max_gap_idx = np.argmax(diffs)
-    rotation = hues_sorted[max_gap_idx]
-    unwrapped = (hues - rotation) % 360
+    diffs = np.diff(np.concatenate((hues_sorted, hues_sorted[:1] + 360.0)))
+    max_gap_idx = int(np.argmax(diffs))
+    rotation = float(hues_sorted[max_gap_idx])
+    unwrapped = (hues - rotation) % 360.0
     return unwrapped, rotation
 
 def path_cost(order, lab_current):
@@ -788,16 +795,67 @@ def build_palette_from_rgb_array(colors_source: np.ndarray, target_size: int):
     return kept_reps, color_map, pad_candidates
 
 
+@njit(fastmath=True, cache=True)
 def nearest_palette_index(color: np.ndarray, palette_int16: np.ndarray) -> int:
     """Return index of nearest palette color by Euclidean distance in RGB."""
-    diff = palette_int16 - color.astype(np.int16)
-    d2 = np.sum(diff * diff, axis=1)
-    return int(np.argmin(d2))
+    # Expect color as uint8 or int16; cast to int16 once
+    c0 = int(color[0])
+    c1 = int(color[1])
+    c2 = int(color[2])
+    best = 0
+    bestd = np.int64(2_147_483_647)
+    for i in range(palette_int16.shape[0]):
+        dr = int(palette_int16[i, 0]) - c0
+        dg = int(palette_int16[i, 1]) - c1
+        db = int(palette_int16[i, 2]) - c2
+        d = dr*dr + dg*dg + db*db
+        if d < bestd:
+            bestd = d
+            best = i
+    return best
+
+
+@njit(fastmath=True, cache=True, parallel=True)
+def nearest_indices_batch(cand_int16: np.ndarray, palette_int16: np.ndarray) -> np.ndarray:
+    """Numba-parallel batch nearest search.
+
+    Args:
+        cand_int16: (M,3) int16 candidate colors.
+        palette_int16: (P,3) int16 palette.
+    Returns:
+        (M,) int64 indices of nearest palette entries.
+    """
+    m = cand_int16.shape[0]
+    p = palette_int16.shape[0]
+    out = np.empty(m, dtype=np.int64)
+    if p == 0:
+        for i in prange(m):
+            out[i] = 0
+        return out
+    for i in prange(m):
+        c0 = cand_int16[i, 0]
+        c1 = cand_int16[i, 1]
+        c2 = cand_int16[i, 2]
+        best = 0
+        bestd = np.int64(2_147_483_647)
+        for j in range(p):
+            dr = palette_int16[j, 0] - c0
+            dg = palette_int16[j, 1] - c1
+            db = palette_int16[j, 2] - c2
+            d = dr*dr + dg*dg + db*db
+            if d < bestd:
+                bestd = d
+                best = j
+        out[i] = best
+    return out
 
 
 def map_rgb_array_to_palette_indices(arr_rgb: np.ndarray, lut_exact: dict, palette_int16: np.ndarray) -> np.ndarray:
     """
     Map an RGB image array to palette indices using an optional exact LUT first, then nearest search.
+
+    - Exact pass is now vectorized via packed 24-bit keys + searchsorted (avoids Python loop/dict lookups).
+    - Nearest pass keeps chunking to bound memory; optionally uses a Numba batch kernel for large chunks.
 
     Args:
         arr_rgb: (H,W,3) uint8 array of image pixels.
@@ -807,31 +865,69 @@ def map_rgb_array_to_palette_indices(arr_rgb: np.ndarray, lut_exact: dict, palet
     Returns:
         (H,W) uint16 array of palette indices.
     """
+    if arr_rgb.size == 0:
+        return np.empty(arr_rgb.shape[:2], dtype=np.uint16)
+
     h, w = arr_rgb.shape[:2]
     flat = arr_rgb.reshape(-1, 3)
-    indices = np.full((flat.shape[0],), 0, dtype=np.uint16)
-    unmatched_mask = np.ones((flat.shape[0],), dtype=bool)
-    # Fast exact pass
-    for i in range(flat.shape[0]):
-        t = tuple(int(x) for x in flat[i])
-        if t in lut_exact:
-            indices[i] = lut_exact[t]
-            unmatched_mask[i] = False
-    # Nearest for unmatched
+    n = flat.shape[0]
+
+    indices = np.zeros((n,), dtype=np.uint16)
+    unmatched_mask = np.ones((n,), dtype=bool)
+
+    # -------- Exact LUT pass (vectorized) --------
+    if lut_exact:
+        # Pack RGB -> uint32 key: r | (g<<8) | (b<<16)
+        def pack_rgb_u32(a: np.ndarray) -> np.ndarray:
+            a32 = a.astype(np.uint32, copy=False)
+            return (a32[:, 0]) | (a32[:, 1] << 8) | (a32[:, 2] << 16)
+
+        keys_flat = pack_rgb_u32(flat)
+
+        # Build sorted key/value arrays from dict once per call
+        lut_items = list(lut_exact.items())
+        if lut_items:
+            lut_keys = np.array([np.uint32(k[0] | (k[1] << 8) | (k[2] << 16)) for k, _ in lut_items], dtype=np.uint32)
+            lut_vals = np.array([int(v) for _, v in lut_items], dtype=np.int64)
+            order = np.argsort(lut_keys)
+            lut_keys = lut_keys[order]
+            lut_vals = lut_vals[order]
+
+            idx = np.searchsorted(lut_keys, keys_flat)
+            valid = (idx < lut_keys.size)
+            valid_idx = idx[valid]
+            match = np.zeros_like(valid, dtype=bool)
+            if lut_keys.size > 0:
+                match_valid = lut_keys[valid_idx] == keys_flat[valid]
+                match[valid] = match_valid
+            if match.any():
+                indices[match] = lut_vals[idx[match]].astype(np.uint16)
+                unmatched_mask[match] = False
+
+    # -------- Nearest for unmatched --------
     if unmatched_mask.any():
         cand = flat[unmatched_mask]
         pal = palette_int16
-        chunk = 100000
-        start = 0
         where_idx = np.where(unmatched_mask)[0]
+
+        # Choose strategy: for very large chunks, prefer Numba kernel to reduce temporary allocations
+        use_numba = True
+        chunk = 200000  # process per chunk to bound memory
+        start = 0
         while start < cand.shape[0]:
             end = min(start + chunk, cand.shape[0])
-            c = cand[start:end].astype(np.int16)[:, None, :]
-            diff = pal[None, :, :] - c
-            d2 = np.sum(diff * diff, axis=2)
-            nearest = np.argmin(d2, axis=1)
+            sub = cand[start:end].astype(np.int16, copy=False)
+            if use_numba:
+                nearest = nearest_indices_batch(sub, pal)
+            else:
+                # Fallback: vectorized broadcasting (more memory)
+                c = sub[:, None, :]
+                diff = pal[None, :, :] - c
+                d2 = np.sum(diff * diff, axis=2)
+                nearest = np.argmin(d2, axis=1).astype(np.int64)
             indices[where_idx[start:end]] = nearest.astype(np.uint16)
             start = end
+
     return indices.reshape(h, w)
 
 
@@ -920,16 +1016,19 @@ def old_perceptual_color_sort(colors):
 
     return sorted_colors
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True, cache=True, parallel=True)
 def delta_e_matrix_numba(lab):
     n = lab.shape[0]
     D = np.empty((n, n), dtype=np.float32)
-    for i in range(n):
+    for i in prange(n):
+        li0 = lab[i, 0]
+        li1 = lab[i, 1]
+        li2 = lab[i, 2]
         for j in range(n):
-            dl = lab[i, 0] - lab[j, 0]
-            da = lab[i, 1] - lab[j, 1]
-            db = lab[i, 2] - lab[j, 2]
-            D[i, j] = (dl*dl + da*da + db*db)**0.5
+            dl = li0 - lab[j, 0]
+            da = li1 - lab[j, 1]
+            db = li2 - lab[j, 2]
+            D[i, j] = (dl*dl + da*da + db*db) ** 0.5
     return D
 
 def perceptual_color_sort_updated(colors):
