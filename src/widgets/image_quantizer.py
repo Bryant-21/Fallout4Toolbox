@@ -1,4 +1,5 @@
 import os
+import traceback
 from typing import Optional
 
 import numpy as np
@@ -199,7 +200,7 @@ class ImageQuantizerWidget(BaseWidget):
             except Exception:
                 pass
         try:
-            q_img, info = quantize_image(self.original_pil, method)
+            q_img = quantize_image(self.original_pil, method)
             # Mid-progress update
             try:
                 p = getattr(self, 'parent', None)
@@ -214,25 +215,17 @@ class ImageQuantizerWidget(BaseWidget):
             unique, counts = np.unique(arr.reshape(-1, 3), axis=0, return_counts=True)
             target = int(cfg.get(cfg.ci_default_palette_size))
             before = len(unique)
-            if before > target:
-                logger.debug(f"ImageQuantizer: reducing {before}→{target} with LAB/ΔE00 + hue balancing")
-                kept_reps, color_map, pad_candidates = reduce_colors_lab_de00_with_hue_balance(unique, counts, target)
-                arr = remap_rgb_array_to_representatives(arr, color_map)
-                rgb = Image.fromarray(arr.astype('uint8'), 'RGB')
-                after = len(np.unique(arr.reshape(-1, 3), axis=0))
-                logger.debug(f"ImageQuantizer: post-reduction unique colors = {after}")
-            else:
-                after = before
             self.quantized_pil = rgb
             self._display_on_label(self.quantized_pil, self.quantized_label)
             self.btn_save.setEnabled(True)
             InfoBar.success(
                 title=self.tr("Quantization complete"),
-                content=self.tr(f"{info.get('description', method)}; colors: {before}→{after} (target {target})"),
+                content=self.tr(f"colors: {before}→{q_img.getcolors().__len__()} (target {target})"),
                 duration=3000,
                 parent=self,
             )
         except Exception as e:
+            traceback.print_exc()
             logger.error(f"Quantization failed: {e}")
             QMessageBox.critical(self, self.tr("Error"), self.tr(f"Quantization failed: {e}"))
         finally:
