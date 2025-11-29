@@ -27,7 +27,7 @@ from src.utils.dds_utils import load_image
 if CAPABILITIES["mip_flooding"]:
     from src.utils.mipflooding import _apply_mip_flooding_to_png
 from src.utils.nifutils import DDS_DIFFUSE_RE, remove_padding_from_texture_using_nif_uv
-from utils.capabilities import CAPABILITIES
+from src.utils.capabilities import CAPABILITIES
 from src.utils.chainner_utils import run_chainner_directory
 from src.utils.appconfig import cfg as _cfg
 

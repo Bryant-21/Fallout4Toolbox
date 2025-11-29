@@ -10,8 +10,8 @@ from skimage.color import rgb2lab, deltaE_ciede2000
 from src.utils.appconfig import QuantAlgorithm
 from src.utils.appconfig import cfg
 from src.utils.logging_utils import logger
-from utils.dds_utils import load_image
-from utils.palette_utils import quantize_image, _get_palette_array
+from src.utils.dds_utils import load_image
+from src.utils.palette_utils import quantize_image, _get_palette_array
 
 
 def pad_colors_to_target(existing_colors, original_image, target_size):

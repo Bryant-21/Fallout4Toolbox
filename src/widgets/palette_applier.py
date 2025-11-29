@@ -13,7 +13,7 @@ from src.utils.dds_utils import load_image
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from utils.filesystem_utils import get_app_root
+from src.utils.filesystem_utils import get_app_root
 
 
 class PaletteApplier(BaseWidget):

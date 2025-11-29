@@ -31,8 +31,8 @@ from src.utils.dds_utils import save_image, load_image
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from utils.filesystem_utils import get_app_root
-from utils.palette_utils import quantize_image, apply_palette_to_greyscale, _get_palette_array, apply_smooth_dither
+from src.utils.filesystem_utils import get_app_root
+from src.utils.palette_utils import quantize_image, apply_palette_to_greyscale, _get_palette_array, apply_smooth_dither
 
 
 class SinglePaletteGenerationWorker(QThread):

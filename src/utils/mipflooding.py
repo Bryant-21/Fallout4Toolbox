@@ -4,7 +4,7 @@ from pathlib import Path
 from PIL import Image
 
 from src.utils.logging_utils import logger
-from utils.capabilities import CAPABILITIES
+from src.utils.capabilities import CAPABILITIES
 
 if CAPABILITIES["mip_flooding"]:
     from mipflooding.wrapper import image_processing as _mip_image_processing

@@ -24,7 +24,7 @@ from src.utils.appconfig import cfg, ConfigItem
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from utils.cards import TextSettingCard
+from src.utils.cards import TextSettingCard
 
 # Reuse supported extensions from bulk palette if available, otherwise define here
 try:

@@ -16,8 +16,8 @@ from src.utils.cards import TextSettingCard
 from src.utils.helpers import BaseWidget
 from src.utils.logging_utils import logger
 from src.utils.appconfig import cfg
-from utils.filesystem_utils import get_app_root
-from utils.icons import CustomIcons
+from src.utils.filesystem_utils import get_app_root
+from src.utils.icons import CustomIcons
 
 RESOURCE_FILES = {
     'Human': 'SubGraphData_HumanRaceSubGraphData.txt',

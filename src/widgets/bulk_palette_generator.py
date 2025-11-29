@@ -1,6 +1,5 @@
 import os
 import re
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -22,19 +21,17 @@ from src.palette.palette_engine import (
     perceptual_color_sort,
     next_power_of_2,
     pad_colors_to_target,
-    convert_to_dds,
-    load_image,
     rgb_to_lab_array,
-    hue_angle_from_ab,
     build_palette_from_rgb_array,
     map_rgb_array_to_palette_indices,
     nearest_palette_index,
 )
-from src.utils.appconfig import cfg, TEXCONV_EXE
+from src.utils.appconfig import cfg
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from utils.cards import TextSettingCard
+from src.utils.cards import TextSettingCard
+from src.utils.dds_utils import load_image, convert_to_dds
 
 SUPPORTED_EXTS = {'.png', '.jpg', '.jpeg', '.tga', '.bmp', '.tif', '.tiff', '.dds'}
 

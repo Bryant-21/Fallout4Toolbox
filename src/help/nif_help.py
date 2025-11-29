@@ -14,7 +14,7 @@ from qfluentwidgets import ScrollArea, ExpandLayout
 
 
 from src.utils.cards import TextCard
-from utils.filesystem_utils import get_app_root
+from src.utils.filesystem_utils import get_app_root
 
 
 class NifHelp(ScrollArea):

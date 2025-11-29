@@ -24,12 +24,12 @@ from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from src.utils.dds_utils import load_image
-from utils.imageutils import dilation_fill_static
+from src.utils.imageutils import dilation_fill_static
 
 if CAPABILITIES["mip_flooding"]:
-    from utils.mipflooding import _apply_mip_flooding_to_png
+    from src.utils.mipflooding import _apply_mip_flooding_to_png
 
-from utils.nifutils import load_nif, rasterize_uv_mask
+from src.utils.nifutils import load_nif, rasterize_uv_mask
 from src.utils.chainner_utils import run_chainner, get_or_download_model
 
 

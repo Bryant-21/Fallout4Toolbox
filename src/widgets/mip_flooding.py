@@ -18,7 +18,7 @@ from src.utils.appconfig import cfg
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from utils.mipflooding import _apply_mip_flooding_to_png
+from src.utils.mipflooding import _apply_mip_flooding_to_png
 
 
 class MipFloodingWorker(QThread):

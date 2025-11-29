@@ -9,7 +9,7 @@ from typing import Dict, Optional, List, Tuple
 from PIL import Image
 
 from src.utils.logging_utils import logger
-from utils.filesystem_utils import get_app_root
+from src.utils.filesystem_utils import get_app_root
 
 # Supported file extensions for counting/matching inputs
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".dds")
