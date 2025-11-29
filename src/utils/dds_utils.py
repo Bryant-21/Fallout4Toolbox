@@ -88,7 +88,8 @@ def load_image(path, f='RGBA'):
         logger.error(f"Failed to load image '{path}': {e}")
         raise
 
-def convert_to_dds(input_path, output_path, is_palette=False, palette_width=128, palette_height=8):
+def convert_to_dds(input_path, output_path, is_palette=False, palette_width=128, palette_height=8,
+                   generate_mips=False, target_format=None):
     """Convert image to DDS format using texconv.exe.
 
     Notes:
@@ -114,26 +115,13 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=128,
                 input_path,
                 '-o', out_dir
             ]
-        elif "greyscale" in input_path:
-            cmd = [
-                TEXCONV_EXE,
-                '-f', 'BC7_UNORM',
-                '-y',
-                '-bc', 'q',
-                '-m', '1',
-                input_path,
-                '-o', out_dir
-            ]
         else:
-            cmd = [
-                TEXCONV_EXE,
-                '-f', 'BC7_UNORM',
-                '-y',
-                '-bc', 'q',
-                '-m', '1',
-                input_path,
-                '-o', out_dir
-            ]
+            # Determine output format
+            out_fmt = target_format or 'BC7_UNORM'
+            cmd = [TEXCONV_EXE, '-f', out_fmt, '-y', '-bc', 'q']
+            if not generate_mips:
+                cmd.extend(['-m', '1'])
+            cmd.extend([input_path, '-o', out_dir])
 
         logger.debug(f"Running texconv command: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)

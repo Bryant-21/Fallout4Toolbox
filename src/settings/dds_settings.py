@@ -37,6 +37,16 @@ class DDSSettings(GenericSettings):
             configItem=cfg.bc3_cfg
         )
 
+        # Downscale method selection
+        self.sc_downscale_method = OptionsSettingCard(
+            cfg.dds_downscale_method,
+            CustomIcons.RESCALE.icon(stroke=True),
+            self.tr("Downscale Method"),
+            self.tr("Choose how images are resized when downscaling"),
+            texts=["texconv", "nearest", "bilinear", "bicubic", "lanczos", "box", "hamming"],
+            parent=self
+        )
+
         self.__initWidget()
 
     def __initWidget(self):
@@ -46,5 +56,6 @@ class DDSSettings(GenericSettings):
         self.settings_group.addSettingCard(self.sc_no_upscale)
         self.settings_group.addSettingCard(self.sc_mips)
         self.settings_group.addSettingCard(self.sc_bc3)
+        self.settings_group.addSettingCard(self.sc_downscale_method)
 
         self.setupLayout()

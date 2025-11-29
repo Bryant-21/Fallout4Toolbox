@@ -53,6 +53,12 @@ class Config(QConfig):
     no_upscale_cfg = ConfigItem("dds_resizer", "no_upscale", True, BoolValidator())
     mips_cfg = ConfigItem("dds_resizer", "generate_mips", True, BoolValidator())
     bc3_cfg = ConfigItem("dds_resizer", "convert_to_bc3", False, BoolValidator())
+    dds_downscale_method = OptionsConfigItem(
+        "dds_resizer",
+        "downscale_method",
+        "texconv",
+        OptionsValidator(["texconv", "nearest", "bilinear", "bicubic", "lanczos", "box", "hamming"])
+    )
 
     #Palette
     ci_default_quant_method = OptionsConfigItem("palette", "default_quantization_method",

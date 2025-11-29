@@ -16,6 +16,7 @@ from src.utils.cards import TextSettingCard
 from src.utils.helpers import BaseWidget
 from src.utils.logging_utils import logger
 from src.utils.appconfig import cfg
+from utils.filesystem_utils import get_app_root
 from utils.icons import CustomIcons
 
 RESOURCE_FILES = {
@@ -30,7 +31,7 @@ class SubGraphWorker(QtCore.QThread):
     finished = QtCore.Signal(str)
     error = QtCore.Signal(str)
 
-    def __init__(self, resource_dir: str,
+    def __init__(self,
                  target_anim: str,
                  new_anim: str,
                  target_folder: str,
@@ -39,7 +40,6 @@ class SubGraphWorker(QtCore.QThread):
                  races: List[str],
                  parent=None):
         super().__init__(parent)
-        self.resource_dir = resource_dir
         self.target_anim = (target_anim or '').strip()
         self.new_anim = (new_anim or '').strip()
         self.target_folder = (target_folder or '').strip()
@@ -163,7 +163,7 @@ class SubGraphWorker(QtCore.QThread):
                 return
 
             # Build file list
-            in_files = [os.path.join(self.resource_dir, RESOURCE_FILES[r]) for r in selected]
+            in_files = [os.path.join(get_app_root(), 'resource', RESOURCE_FILES[r]) for r in selected]
             total = len(in_files)
             processed = 0
 
@@ -360,16 +360,6 @@ class SubGraphMakerWindow(BaseWidget):
         buttons.accepted.connect(dlg.accept)
         dlg.exec()
 
-    def _resource_dir(self) -> str:
-        # Resolve project resource directory relative to this file (../.. / resource)
-        try:
-            here = os.path.abspath(os.path.dirname(__file__))
-            root = os.path.abspath(os.path.join(here, os.pardir, os.pardir))
-            res = os.path.join(root, 'resource')
-            return res
-        except Exception:
-            return os.path.join(os.getcwd(), 'resource')
-
     @QtCore.Slot()
     def on_run(self):
         target_anim = (cfg.cfg_target_anim.value or '').strip()
@@ -402,11 +392,6 @@ class SubGraphMakerWindow(BaseWidget):
             QtWidgets.QMessageBox.warning(self, "Validation", "Please enter New Folder.")
             return
 
-        res_dir = self._resource_dir()
-        if not os.path.isdir(res_dir):
-            QtWidgets.QMessageBox.warning(self, "Validation", f"Resource folder not found: {res_dir}")
-            return
-
         p = getattr(self, 'parent', None)
         if p and hasattr(p, 'show_progress'):
             try:
@@ -416,7 +401,6 @@ class SubGraphMakerWindow(BaseWidget):
 
         prepend_mode = bool(cfg.cfg_target_prepend.value)
         self.worker = SubGraphWorker(
-            resource_dir=res_dir,
             target_anim=target_anim,
             new_anim=new_anim,
             target_folder=target_folder,

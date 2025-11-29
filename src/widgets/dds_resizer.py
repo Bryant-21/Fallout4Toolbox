@@ -23,6 +23,8 @@ from src.utils.appconfig import cfg, TEXCONV_EXE
 from src.utils.cards import TextSettingCard
 from src.utils.helpers import BaseWidget
 from src.utils.logging_utils import logger
+from src.utils import dds_utils
+from PIL import Image
 
 
 # --- Utility: read DDS dimensions ---
@@ -88,7 +90,7 @@ class Worker(QtCore.QThread):
     def __init__(self, src_dir: str, sizes: List[int], out_root: str,
                  per_size_subfolders: bool = True, no_upscale: bool = True,
                  generate_mips: bool = True, threads: int | None = None, ignore_patterns: Optional[List[str]] = None,
-                 convert_to_srgb: bool = False, parent=None):
+                 convert_to_srgb: bool = False, downscale_method: str = "texconv", parent=None):
         super().__init__(parent)
         self.src_dir = src_dir
         self.sizes = sorted(set([int(s) for s in sizes if s > 0]))
@@ -97,6 +99,7 @@ class Worker(QtCore.QThread):
         self.no_upscale = no_upscale
         self.generate_mips = generate_mips
         self.convert_to_srgb = convert_to_srgb
+        self.downscale_method = (downscale_method or "texconv").lower()
         self.threads = max(1, int(threads or (os.cpu_count() or 1)))
         # Normalize ignore patterns: use forward slashes for matching and strip whitespace
         self.ignore_patterns = []
@@ -195,6 +198,73 @@ class Worker(QtCore.QThread):
             processed = 0
             processed_lock = QtCore.QMutex()
 
+            def _pillow_resize_and_save(src_path: str, out_path: str, size: int, needs_bc7_conversion: bool,
+                                        orig_w: int, orig_h: int) -> str:
+                # Determine target format for texconv after PNG save
+                target_fmt = 'BC3_UNORM' if needs_bc7_conversion else None
+                # Compute new dimensions preserving aspect ratio
+                if orig_w <= 0 or orig_h <= 0:
+                    try:
+                        im_probe = dds_utils.load_image(src_path, f='RGBA')
+                        orig_w_local, orig_h_local = im_probe.width, im_probe.height
+                        try:
+                            im_probe.close()
+                        except Exception:
+                            pass
+                    except Exception:
+                        orig_w_local, orig_h_local = 0, 0
+                else:
+                    orig_w_local, orig_h_local = orig_w, orig_h
+
+                new_w, new_h = orig_w_local, orig_h_local
+                if orig_w_local and orig_h_local:
+                    scale = size / max(orig_w_local, orig_h_local)
+                    if self.no_upscale and scale >= 1.0 and not needs_bc7_conversion:
+                        # Just copy if allowed
+                        try:
+                            shutil.copy2(src_path, out_path)
+                            return f'Copied (no upscale): {os.path.relpath(src_path, self.src_dir)} -> {os.path.relpath(out_path, self.out_root)}'
+                        except Exception as e:
+                            return f'ERROR copying {src_path}: {e}'
+                    if scale < 1.0:
+                        new_w = max(1, int(round(orig_w_local * scale)))
+                        new_h = max(1, int(round(orig_h_local * scale)))
+                # Choose resampling filter
+                method = self.downscale_method
+                resample_map = {
+                    'nearest': Image.Resampling.NEAREST,
+                    'bilinear': Image.Resampling.BILINEAR,
+                    'bicubic': Image.Resampling.BICUBIC,
+                    'lanczos': Image.Resampling.LANCZOS,
+                    'box': Image.Resampling.BOX,
+                    'hamming': Image.Resampling.HAMMING,
+                }
+                resample = resample_map.get(method, Image.Resampling.LANCZOS)
+
+                # Load, resize (if needed), save to temporary PNG then convert via texconv
+                tmp_png = dds_utils.add_temp_to_filename(out_path)
+                try:
+                    im = dds_utils.load_image(src_path, f='RGBA')
+                    if new_w != im.width or new_h != im.height:
+                        im = im.resize((new_w, new_h), resample=resample)
+                    im.save(tmp_png)
+                    dds_utils.convert_to_dds(tmp_png, out_path, is_palette=False,
+                                             generate_mips=self.generate_mips,
+                                             target_format=target_fmt)
+                    return f'Resized to {size}: {os.path.relpath(src_path, self.src_dir)}'
+                except Exception as e:
+                    return f'ERROR Pillow resize for {os.path.relpath(src_path, self.src_dir)}: {e}'
+                finally:
+                    try:
+                        im.close()
+                    except Exception:
+                        pass
+                    try:
+                        if os.path.exists(tmp_png):
+                            os.remove(tmp_png)
+                    except Exception:
+                        pass
+
             def task(size: int, src_path: str) -> str:
                 if self._abort:
                     return 'aborted'
@@ -218,6 +288,9 @@ class Worker(QtCore.QThread):
 
                 # Check if BC7 conversion is needed
                 needs_bc7_conversion = self.convert_to_srgb and src_path in bc7_sources
+
+                if self.downscale_method != 'texconv':
+                    return _pillow_resize_and_save(src_path, out_path, size, needs_bc7_conversion, w, h)
 
                 if self.no_upscale and max_dim and max_dim <= size and not needs_bc7_conversion:
                     if self._abort:
@@ -452,6 +525,7 @@ class DDSResizerWindow(BaseWidget):
         gen_mips = bool(cfg.mips_cfg.value)
         to_bc3 = bool(cfg.bc3_cfg.value)
         threads = cfg.get(cfg.threads_cfg)
+        method = (cfg.dds_downscale_method.value if hasattr(cfg, 'dds_downscale_method') else 'texconv') or 'texconv'
         sizes = self._parse_sizes(sizes_csv)
 
         if not src or not os.path.isdir(src):
@@ -499,6 +573,7 @@ class DDSResizerWindow(BaseWidget):
             'to_bc3': to_bc3,
             'threads': threads,
             'ignore_patterns': ignore_patterns,
+            'method': method,
         }
 
         self.worker = Worker(
@@ -511,6 +586,7 @@ class DDSResizerWindow(BaseWidget):
             threads=threads,
             ignore_patterns=ignore_patterns,
             convert_to_srgb=to_bc3,
+            downscale_method=method,
         )
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.on_finished)
@@ -563,6 +639,7 @@ class DDSResizerWindow(BaseWidget):
         opts_line = (
             f"Options: per-size folders = {per_size}, no upscale = {no_upscale}, generate mips = {gen_mips}, convert BC7→BC3 = {to_bc3}"
         )
+        method_line = f"Downscale method: {ctx.get('method') or 'texconv'}"
         threads_line = f"Threads: {threads}"
         src_line = f"Source: {src}"
         out_line = f"Output: {out}"
@@ -575,6 +652,7 @@ class DDSResizerWindow(BaseWidget):
             elapsed_line,
             sizes_line,
             opts_line,
+            method_line,
             threads_line,
             src_line,
             out_line,
