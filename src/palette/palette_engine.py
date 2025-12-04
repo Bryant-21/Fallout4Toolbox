@@ -11,7 +11,7 @@ from src.utils.appconfig import QuantAlgorithm
 from src.utils.appconfig import cfg
 from src.utils.logging_utils import logger
 from src.utils.dds_utils import load_image
-from src.utils.palette_utils import quantize_image, _get_palette_array
+from src.utils.palette_utils import quantize_image, get_palette
 
 
 def pad_colors_to_target(existing_colors, original_image, target_size):
@@ -907,7 +907,7 @@ def adjacency_aware_color_sort(colors: list | np.ndarray,
 def adjacency_from_p_mode(p_img: Image.Image, connectivity=8):
     """Build adjacency (co-occurrence) matrix from P-mode quantized image."""
     assert p_img.mode == "P"
-    pal = _get_palette_array(p_img)
+    pal = get_palette(p_img)
     arr = np.array(p_img)
     h, w = arr.shape
     K = len(pal)

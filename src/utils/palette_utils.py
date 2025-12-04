@@ -154,7 +154,7 @@ def grayscale_luma601_no_norm(q_img):
 # out-of-range and mapped to black). Instead, trim to the highest palette index
 # actually used by the image. This keeps index mapping consistent with the
 # quantized image while still dropping any truly-unused trailing rows.
-def get_palette(q_img, target_size=None):
+def get_palette(q_img: Image.Image):
     """Return the palette rows actually needed by the quantized image.
 
     Args:
@@ -181,7 +181,7 @@ def get_palette(q_img, target_size=None):
 def grayscale_lab(q_img, target_size):
     # Method A: perceptual L channel from LAB
     idx_img = np.array(q_img, dtype=np.uint8)
-    palette = get_palette(q_img, target_size)
+    palette = get_palette(q_img)
     if palette.size == 0:
         return q_img.convert('L')
     bgr_pal = palette[:, ::-1].reshape(-1, 1, 3)
@@ -202,7 +202,7 @@ def grayscale_high_precision(q_img, target_size):
         return out
 
     idx_img = np.array(q_img, dtype=np.uint8)
-    palette = get_palette(q_img, target_size)
+    palette = get_palette(q_img)
     if palette.size == 0:
         return q_img.convert('L')
     palf = palette.astype(np.float64) / 255.0
@@ -222,7 +222,7 @@ def grayscale_high_precision(q_img, target_size):
 def unique_color_list(q_img, target_size):
     """Return unique palette colors in image order"""
     idx_img = np.array(q_img, dtype=np.uint8)
-    palette = get_palette(q_img, target_size)
+    palette = get_palette(q_img)
     h, w = idx_img.shape
     seen = {}
     order = []
@@ -260,7 +260,7 @@ def grayscale_perceptual_rank(q_img, target_size):
 
     # Build grayscale image
     idx_img = np.array(q_img, dtype=np.uint8)
-    palette = get_palette(q_img, target_size)
+    palette = get_palette(q_img)
     h, w = idx_img.shape
     gray_img = np.zeros((h, w), dtype=np.uint8)
     for y in range(h):
@@ -275,7 +275,7 @@ def grayscale_perceptual_rank(q_img, target_size):
 def grayscale_weighted_lab(q_img, target_size):
     """Method D: Lab L + chroma weighting for better color separation"""
     idx_img = np.array(q_img, dtype=np.uint8)
-    palette = get_palette(q_img, target_size)
+    palette = get_palette(q_img)
     if palette.size == 0:
         return q_img.convert('L')
 
@@ -309,7 +309,7 @@ def build_palette_at_target_size(q_img, gray_img, target_size):
     idx_img = np.array(q_img, dtype=np.uint8)
     g_arr = np.array(gray_img, dtype=np.uint8)
 
-    pal = get_palette(q_img, target_size)
+    pal = get_palette(q_img)
     if pal is not None and len(pal) > 0:
         palette = np.array(pal, dtype=np.uint8).reshape(-1, 3)
     else:
@@ -485,14 +485,6 @@ def apply_palette_to_greyscale(palette_img: Image.Image, grey_img: Image.Image) 
         a_img = Image.fromarray(alpha, mode='L')
         return Image.merge('RGBA', (rgb_img.split()[0], rgb_img.split()[1], rgb_img.split()[2], a_img))
     return rgb_img
-
-
-def _get_palette_array(q_img: Image.Image):
-    """Return Nx3 uint8 palette array from a P-mode image."""
-    palette = np.array(q_img.getpalette(), dtype=np.uint8).reshape(-1, 3)
-    return palette[:q_img.getcolors().__len__()]  # limit to used colors
-
-
 
 def _bayer_matrix_8x8() -> np.ndarray:
     """Return a normalized 8x8 Bayer matrix in range [0,1). for BC7"""

@@ -1,10 +1,9 @@
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtCore import Signal
@@ -17,22 +16,23 @@ from qfluentwidgets import (
     ConfigItem,
     FluentIcon as FIF,
     PrimaryPushButton,
-    PushButton, SegmentedWidget
+    SegmentedWidget
 )
 
 from src.help.palette_help import PaletteHelp
-from src.palette.palette_engine import perceptual_color_sort, adjacency_aware_color_sort, analyze_color_distribution, \
+from src.palette.palette_engine import perceptual_color_sort, analyze_color_distribution, \
     map_rgb_array_to_palette_indices, \
-    build_row_from_arrays, compose_palette_image, upscale_and_smooth_lut, \
-    adjacency_from_p_mode, adjacency_aware_color_sort_pmode, map_rgb_array_to_palette_indices_coarse
+    compose_palette_image, upscale_and_smooth_lut, \
+    adjacency_aware_color_sort_pmode
 from src.settings.palette_settings import PaletteSettings
 from src.utils.appconfig import cfg
 from src.utils.dds_utils import save_image, load_image
+from src.utils.filesystem_utils import get_app_root
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from src.utils.filesystem_utils import get_app_root
-from src.utils.palette_utils import quantize_image, apply_palette_to_greyscale, _get_palette_array, apply_smooth_dither
+from src.utils.palette_utils import quantize_image, apply_palette_to_greyscale, apply_smooth_dither, \
+    get_palette
 
 
 class SinglePaletteGenerationWorker(QThread):
@@ -42,20 +42,16 @@ class SinglePaletteGenerationWorker(QThread):
     step_complete = Signal(str, object)  # step_name, result_data
 
     def __init__(self, parent, image_path, output_dir,
-                 extra_image_paths=None,
                  working_resolution=None,
                  produce_color_report=False,
-                 greyscale_texture_paths=None,
                  palette_row_height=4):
         super().__init__()
         self.parent = parent
         self.image_path = image_path
         self.output_dir = output_dir
         # previous_data is deprecated; all intermediates are local to run()
-        self.extra_image_paths = extra_image_paths or []
         self.working_resolution = working_resolution  # None for Original, else max side target (e.g., 4096)
         self.produce_color_report = produce_color_report
-        self.greyscale_texture_paths = greyscale_texture_paths or []
         self.palette_row_height = palette_row_height
         # sRGB compensation removed from UI/logic; keep attribute for backward-compatibility in save paths
         self.srgb_compensation = False
@@ -104,114 +100,13 @@ class SinglePaletteGenerationWorker(QThread):
             self.progress_updated.emit(30, f"Quantizing using {cfg.get(cfg.ci_default_quant_method)}...")
 
             # Quantize to exactly Palette_SIZE colors using selected method
-            # quantize_image now returns a P-mode image; use its palette directly
             quantized = quantize_image(original_img, cfg.get(cfg.ci_default_quant_method))
             # Work with palette indices and palette colors (avoid early RGB convert)
             quantized_indices = np.array(quantized, dtype=np.uint8)
-            palette_colors = _get_palette_array(quantized)
+            palette_colors = get_palette(quantized)
             # For algorithms that expect RGB arrays, materialize an RGB view via palette lookup
             quantized_array = palette_colors[quantized_indices]
             logger.debug(f"Quantization complete: {palette_colors} unique colors")
-
-            # Prepare additional data: extra images and greyscale textures pre-processing
-            extra_images_data = []
-            if self.extra_image_paths:
-                self.progress_updated.emit(80, f"Preparing {len(self.extra_image_paths)} additional texture(s)...")
-
-                def _process_extra_image(p):
-                    try:
-                        ex_img = load_image(p)
-                        ex_rgb = ex_img
-                        ex_orig_w, ex_orig_h = ex_rgb.size
-                        ex_proc = downscale_keep_aspect(ex_rgb, self.working_resolution) if self.working_resolution else ex_rgb
-
-                        def fit_within(img, max_w, max_h):
-                            w, h = img.size
-                            if w <= max_w and h <= max_h:
-                                return img
-                            scale = min(max_w / float(w), max_h / float(h))
-                            new_w = max(1, int(round(w * scale)))
-                            new_h = max(1, int(round(h * scale)))
-                            return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-                        ex_proc2 = fit_within(ex_proc, width, height)
-                        ex_w2, ex_h2 = ex_proc2.size
-                        ex_quantized = quantize_image(ex_proc2, cfg.get(cfg.ci_default_quant_method))
-                        ex_idx = np.array(ex_quantized, dtype=np.uint8)
-                        ex_pal_flat = np.array(ex_quantized.getpalette(), dtype=np.uint8)
-                        ex_pal = ex_pal_flat.reshape(-1, 3) if ex_pal_flat.size > 0 else np.zeros((0, 3), dtype=np.uint8)
-                        ex_arr = ex_pal[ex_idx]
-                        return {
-                            'path': p,
-                            'quantized_image': None,
-                            'quantized_array': ex_arr,
-                            'original_dimensions': (ex_orig_w, ex_orig_h),
-                            'processed_dimensions': (ex_w2, ex_h2),
-                            'dimensions': (ex_w2, ex_h2)
-                        }
-                    except Exception as ex:
-                        logger.warning(f"Failed to process extra image '{p}': {ex}")
-                        return None
-
-                max_workers = max(1, int(cfg.get(cfg.threads_cfg)))
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {executor.submit(_process_extra_image, p): idx for idx, p in enumerate(self.extra_image_paths)}
-                    ordered_results = [None] * len(self.extra_image_paths)
-                    for fut in as_completed(futures):
-                        idx = futures[fut]
-                        res = fut.result()
-                        ordered_results[idx] = res
-                    extra_images_data.extend([r for r in ordered_results if r is not None])
-
-            # Quantize greyscale-conversion textures (to later map using base mapping)
-            greyscale_textures_data = []
-            if self.greyscale_texture_paths:
-                self.progress_updated.emit(88, f"Preparing {len(self.greyscale_texture_paths)} greyscale conversion texture(s)...")
-
-                def _process_greyscale_texture(p):
-                    try:
-                        gs_img = load_image(p)
-                        gs_rgb = gs_img
-                        gs_orig_w, gs_orig_h = gs_rgb.size
-                        gs_proc = downscale_keep_aspect(gs_rgb, self.working_resolution) if self.working_resolution else gs_rgb
-
-                        def fit_within(img, max_w, max_h):
-                            w, h = img.size
-                            if w <= max_w and h <= max_h:
-                                return img
-                            scale = min(max_w / float(w), max_h / float(h))
-                            new_w = max(1, int(round(w * scale)))
-                            new_h = max(1, int(round(h * scale)))
-                            return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-                        gs_proc2 = fit_within(gs_proc, width, height)
-                        gs_w2, gs_h2 = gs_proc2.size
-                        gs_quantized = quantize_image(gs_proc2, cfg.get(cfg.ci_default_quant_method))
-                        gs_idx = np.array(gs_quantized, dtype=np.uint8)
-                        gs_pal_flat = np.array(gs_quantized.getpalette(), dtype=np.uint8)
-                        gs_pal = gs_pal_flat.reshape(-1, 3) if gs_pal_flat.size > 0 else np.zeros((0, 3), dtype=np.uint8)
-                        gs_quant_arr = gs_pal[gs_idx]
-                        return {
-                            'path': p,
-                            'processed_color_image': gs_proc2.convert('RGB'),
-                            'processed_color_array': np.array(gs_proc2.convert('RGB')),
-                            'quantized_array': gs_quant_arr,
-                            'original_dimensions': (gs_orig_w, gs_orig_h),
-                            'processed_dimensions': (gs_w2, gs_h2)
-                        }
-                    except Exception as ex:
-                        logger.warning(f"Failed to process greyscale texture '{p}': {ex}")
-                        return None
-
-                max_workers = max(1, int(cfg.get(cfg.threads_cfg)))
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {executor.submit(_process_greyscale_texture, p): idx for idx, p in enumerate(self.greyscale_texture_paths)}
-                    ordered_results = [None] * len(self.greyscale_texture_paths)
-                    for fut in as_completed(futures):
-                        idx = futures[fut]
-                        res = fut.result()
-                        ordered_results[idx] = res
-                    greyscale_textures_data.extend([r for r in ordered_results if r is not None])
 
             # =====================
             # 2) GREYSCALE STEP
@@ -279,55 +174,7 @@ class SinglePaletteGenerationWorker(QThread):
             except Exception:
                 greyscale_rgb = Image.fromarray(disp, 'L')
 
-            greyscale_textures_results = []
-            gs_sources = greyscale_textures_data
-            if gs_sources:
-                self.progress_updated.emit(80, f"Mapping {len(gs_sources)} greyscale conversion texture(s)...")
-                for entry in gs_sources:
-                    try:
-                        proc_img = entry.get('processed_color_image')
-                        proc_arr = None
-                        if proc_img is not None:
-                            proc_arr = np.array(proc_img)
-                        else:
-                            proc_arr = entry.get('processed_color_array')
-                        if proc_arr is None:
-                            proc_arr = entry.get('quantized_array')
-                        if proc_arr is None:
-                            continue
-                        gs_indices = map_rgb_array_to_palette_indices(proc_arr, lut_exact, pal_int16).astype(np.uint8)
-                        try:
-                            do_post_t = bool(cfg.get(cfg.ci_greyscale_post_enable)) if hasattr(cfg, 'ci_greyscale_post_enable') else False
-                            apply_textures = bool(cfg.get(cfg.ci_greyscale_post_apply_to_textures)) if hasattr(cfg, 'ci_greyscale_post_apply_to_textures') else True
-                        except Exception:
-                            do_post_t = False
-                            apply_textures = True
-                        if do_post_t and apply_textures:
-                            gs_indices = apply_smooth_dither(gs_indices, palette_size)
-                        disp_t = (gs_indices * (255 / (palette_size - 1))).astype(np.uint8) if palette_size > 1 else np.zeros_like(gs_indices, dtype=np.uint8)
-                        # Apply the texture's own alpha as a mask if present
-                        try:
-                            src_arr = np.array(proc_img)
-                            if src_arr.shape[-1] == 4:
-                                alpha_t = src_arr[:, :, 3].astype(np.uint8)
-                                # Ensure masked areas are zero
-                                gs_indices[alpha_t == 0] = 0
-                                disp_t = (gs_indices * (255 / (palette_size - 1))).astype(np.uint8) if palette_size > 1 else np.zeros_like(gs_indices, dtype=np.uint8)
-                                la_t = np.stack([disp_t, alpha_t], axis=2)
-                                gs_img = Image.fromarray(la_t, 'LA')
-                            else:
-                                gs_img = Image.fromarray(disp_t, 'L')
-                        except Exception:
-                            gs_img = Image.fromarray(disp_t, 'L')
-                        greyscale_textures_results.append({
-                            'path': entry.get('path'),
-                            'processed_color_image': proc_img if proc_img is not None else Image.fromarray(
-                                proc_arr.astype('uint8'), 'RGB'),
-                            'greyscale_image': gs_img,
-                            'processed_dimensions': entry.get('processed_dimensions')
-                        })
-                    except Exception as ex:
-                        logger.warning(f"Failed to map greyscale texture '{entry.get('path')}': {ex}")
+            # Greyscale texture mapping removed
 
             self.progress_updated.emit(100, "Greyscale conversion complete!")
 
@@ -341,24 +188,7 @@ class SinglePaletteGenerationWorker(QThread):
             for grey_value in range(palette_size):
                 base_palette_array[grey_value] = grey_to_color[grey_value]
 
-            # Extra rows from additional textures
-            extra_palette_arrays = []
-            extra_sources = extra_images_data
-            if extra_sources:
-                for extra in extra_sources:
-                    extra_arr = extra.get('quantized_array')
-                    if extra_arr is None:
-                        continue
-                    label = os.path.basename(extra.get('path', 'extra'))
-                    palette_for_extra = build_row_from_arrays(
-                        greyscale_indices=greyscale_array,
-                        rgb_array=extra_arr,
-                        base_row=base_palette_array,
-                        palette_size=palette_size,
-                        log_top_k=3,
-                        context_label=label
-                    )
-                    extra_palette_arrays.append(palette_for_extra)
+            # Extra rows from additional textures removed
 
             # Optional upscale to 256
             palette_size_out = palette_size
@@ -372,8 +202,6 @@ class SinglePaletteGenerationWorker(QThread):
 
             if do_upscale and palette_size < 256:
                 base_palette_array = upscale_and_smooth_lut(base_palette_array, target_size=256, sigma=upscale_sigma)
-                if extra_palette_arrays:
-                    extra_palette_arrays = [upscale_and_smooth_lut(r, target_size=256, sigma=upscale_sigma) for r in extra_palette_arrays]
                 # Remap greyscale indices to 0..255
                 if palette_size > 1:
                     scale_u = 255.0 / float(palette_size - 1)
@@ -383,9 +211,8 @@ class SinglePaletteGenerationWorker(QThread):
                 palette_size_out = 256
 
             # Compose palette image
-            all_blocks = [base_palette_array] + extra_palette_arrays if extra_palette_arrays else [base_palette_array]
             palette_image = compose_palette_image(
-                rows=all_blocks,
+                rows=[base_palette_array],
                 row_height=self.palette_row_height,
                 palette_size=palette_size_out,
                 pad_mode='gradient'
@@ -445,31 +272,7 @@ class SinglePaletteGenerationWorker(QThread):
                 output_files['palette'] = palette_path
                 logger.debug(f"Saved Palette: {palette_path}")
 
-                # Save greyscale-conversion textures
-                saved_gs_textures = []
-                saved_color_textures = []
-                gs_tex_list = greyscale_textures_results
-                for idx, entry in enumerate(gs_tex_list, start=1):
-                    try:
-                        color_img = entry.get('processed_color_image')
-                        grey_img = entry.get('greyscale_image')
-                        if color_img is None or grey_img is None:
-                            continue
-
-                        color_out = os.path.join(self.output_dir, f"{base_name}_texture{idx}{output_extension}")
-                        grey_out = os.path.join(self.output_dir, f"{base_name}_greyscaletexture_{idx}{output_extension}")
-
-                        save_image(color_img, color_out)
-                        save_image(grey_img, grey_out)
-
-                        saved_color_textures.append(color_out)
-                        saved_gs_textures.append(grey_out)
-                    except Exception as ex:
-                        logger.warning(f"Failed saving greyscale conversion texture {idx}: {ex}")
-                if saved_color_textures:
-                    output_files['textures'] = saved_color_textures
-                if saved_gs_textures:
-                    output_files['greyscale_textures'] = saved_gs_textures
+                # Saving of additional greyscale-conversion textures removed
 
                 # Optional: Save color report
                 color_report_path = None
@@ -661,16 +464,12 @@ class PaletteGenerator(BaseWidget):
         self.quantized_preview_label = None
         self.preview_label = None
         # previous_data removed; no step-by-step orchestration
-        self.extra_image_paths = []  # Additional textures to include as Palette blocks
-        self.greyscale_texture_paths = []  # Textures to convert to greyscale using base mapping
         self.pivot = SegmentedWidget(self)
         self.stackedWidget = QStackedWidget(self)
         self.init_ui(parent)
         self.pivot.setCurrentItem(self.main_tab.objectName())
         self.boxLayout.addWidget(self.pivot, 0, Qt.AlignmentFlag.AlignLeft)
         self.boxLayout.addWidget(self.stackedWidget)
-        self.buttons_layout.addWidget(self.reset_greyscale_button, stretch=0)
-        self.buttons_layout.addWidget(self.reset_extra_button, stretch=0)
         self.addButtonBarToBottom(self.generate_all_button)
         self.settings_widget = PaletteSettings(self)
         self.settings_drawer.addWidget(self.settings_widget)
@@ -727,24 +526,7 @@ class PaletteGenerator(BaseWidget):
         self.base_image_card.clicked.connect(self.on_base_image_card)
         layout.addWidget(self.base_image_card)
 
-        self.extra_images_card = PushSettingCard(
-            self.tr("Additional Textures"),
-            CustomIcons.IMAGEADD.icon(stroke=True),
-            self.tr("Texture to create more color rows (Optional, multi-select)"),
-            self.tr("None selected")
-        )
-        self.extra_images_card.clicked.connect(self.on_extra_images_card)
-        layout.addWidget(self.extra_images_card)
-
-        self.greyscale_images_card = PushSettingCard(
-            self.tr("Greyscale Conversion Textures"),
-            CustomIcons.GREYSCALE.icon(),
-            self.tr("Textures to convert to greyscale using the palette (Optional, multi-select)"),
-            self.tr("None selected")
-        )
-        self.greyscale_images_card.clicked.connect(self.on_greyscale_images_card)
-        layout.addWidget(self.greyscale_images_card)
-
+        
         self.output_dir_card = PushSettingCard(
             self.tr("Output Directory"),
             CustomIcons.FOLDERRIGHT.icon(),
@@ -759,12 +541,6 @@ class PaletteGenerator(BaseWidget):
         self.generate_all_button = PrimaryPushButton(icon=FIF.RIGHT_ARROW, text="Generate")
         self.generate_all_button.clicked.connect(self.generate_step)
         self.generate_all_button.setEnabled(False)
-
-        # Reset buttons (next to Generate)
-        self.reset_extra_button = PushButton(text="Reset Additional Textures")
-        self.reset_extra_button.clicked.connect(self.clear_extra_images)
-        self.reset_greyscale_button = PushButton(text="Reset Greyscales")
-        self.reset_greyscale_button.clicked.connect(self.clear_greyscale_textures)
 
         # Preview area (4 previews horizontally)
         preview_splitter = QtWidgets.QSplitter(Qt.Orientation.Horizontal)
@@ -824,70 +600,7 @@ class PaletteGenerator(BaseWidget):
             # Update button states
             self.update_button_states()
 
-    def on_extra_images_card(self):
-        last_dir = str(self.ci_last_image_dir.value or "")
-        files, _ = QFileDialog.getOpenFileNames(
-            self,
-            self.tr("Select Additional Textures (will add 4-row blocks to Palette)"),
-            last_dir,
-            "Image Files (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.dds *.tga);;All Files (*)"
-        )
-        if files:
-            # Ensure uniqueness and avoid adding the base image itself
-            new_paths = []
-            for p in files:
-                if p != self.current_image_path and p not in self.extra_image_paths:
-                    new_paths.append(p)
-            if new_paths:
-                self.extra_image_paths.extend(new_paths)
-                names = [os.path.basename(p) for p in self.extra_image_paths]
-                if len(names) > 3:
-                    display = ", ".join(names[:3]) + f" (+{len(names) - 3} more)"
-                else:
-                    display = ", ".join(names) if names else self.tr("None selected")
-                try:
-                    self.extra_images_card.setContent(display)
-                except Exception:
-                    pass
-
-    def clear_extra_images(self):
-        self.extra_image_paths = []
-        try:
-            self.extra_images_card.setContent(self.tr("None selected"))
-        except Exception:
-            pass
-
-    def on_greyscale_images_card(self):
-        last_dir = str(self.ci_last_image_dir.value or "")
-        files, _ = QFileDialog.getOpenFileNames(
-            self,
-            self.tr("Select Textures to Convert to Greyscale (using base mapping)"),
-            last_dir,
-            "Image Files (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.dds *.tga);;All Files (*)"
-        )
-        if files:
-            new_paths = []
-            for p in files:
-                if p != self.current_image_path and p not in self.greyscale_texture_paths:
-                    new_paths.append(p)
-            if new_paths:
-                self.greyscale_texture_paths.extend(new_paths)
-                names = [os.path.basename(p) for p in self.greyscale_texture_paths]
-                if len(names) > 3:
-                    display = ", ".join(names[:3]) + f" (+{len(names) - 3} more)"
-                else:
-                    display = ", ".join(names) if names else self.tr("None selected")
-                try:
-                    self.greyscale_images_card.setContent(display)
-                except Exception:
-                    pass
-
-    def clear_greyscale_textures(self):
-        self.greyscale_texture_paths = []
-        try:
-            self.greyscale_images_card.setContent(self.tr("None selected"))
-        except Exception:
-            pass
+    # Extra image and greyscale texture selection removed
 
     def on_output_dir_card(self):
         last_dir = str(self.ci_last_output_dir.value or (self.output_dir or ""))
@@ -977,10 +690,8 @@ class PaletteGenerator(BaseWidget):
             self,
             self.current_image_path,
             self.output_dir,
-            extra_image_paths=self.extra_image_paths,
             working_resolution=working_resolution,
             produce_color_report=bool(cfg.get(cfg.ci_produce_color_report)),
-            greyscale_texture_paths=self.greyscale_texture_paths,
             palette_row_height=int(cfg.get(cfg.ci_palette_row_height) or 4)
         )
 
@@ -1046,12 +757,7 @@ class PaletteGenerator(BaseWidget):
         # Setting cards and combos
         try:
             self.base_image_card.setEnabled(enabled)
-            self.extra_images_card.setEnabled(enabled)
-            self.greyscale_images_card.setEnabled(enabled)
             self.output_dir_card.setEnabled(enabled)
-            # New reset buttons
-            self.reset_extra_button.setEnabled(enabled)
-            self.reset_greyscale_button.setEnabled(enabled)
         except Exception:
             pass
 
