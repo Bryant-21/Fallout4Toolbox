@@ -1,6 +1,4 @@
-import json
 import os
-from datetime import datetime
 
 import numpy as np
 from PIL import Image
@@ -9,8 +7,7 @@ from PySide6.QtCore import Qt, QThread
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (QVBoxLayout, QLabel, QFileDialog, QWidget, QMessageBox,
-                               QScrollArea,
-                               QGridLayout, QStackedWidget)
+                               QStackedWidget)
 from qfluentwidgets import (
     PushSettingCard,
     ConfigItem,
@@ -20,7 +17,7 @@ from qfluentwidgets import (
 )
 
 from src.help.palette_help import PaletteHelp
-from src.palette.palette_engine import perceptual_color_sort, analyze_color_distribution, \
+from src.palette.palette_engine import perceptual_color_sort, \
     map_rgb_array_to_palette_indices, \
     compose_palette_image, upscale_and_smooth_lut, \
     adjacency_aware_color_sort_pmode
@@ -43,7 +40,6 @@ class SinglePaletteGenerationWorker(QThread):
 
     def __init__(self, parent, image_path, output_dir,
                  working_resolution=None,
-                 produce_color_report=False,
                  palette_row_height=4):
         super().__init__()
         self.parent = parent
@@ -51,7 +47,6 @@ class SinglePaletteGenerationWorker(QThread):
         self.output_dir = output_dir
         # previous_data is deprecated; all intermediates are local to run()
         self.working_resolution = working_resolution  # None for Original, else max side target (e.g., 4096)
-        self.produce_color_report = produce_color_report
         self.palette_row_height = palette_row_height
         # sRGB compensation removed from UI/logic; keep attribute for backward-compatibility in save paths
         self.srgb_compensation = False
@@ -134,48 +129,16 @@ class SinglePaletteGenerationWorker(QThread):
             lut_exact = {tuple(map(int, c)): int(i) for i, c in enumerate(sorted_colors)}
             pal_int16 = np.array(sorted_colors, dtype=np.uint8).astype(np.int16)
             greyscale_array = map_rgb_array_to_palette_indices(quantized_array, lut_exact, pal_int16).astype(np.uint8)
-            # Mask out fully transparent pixels from greyscale mapping (use index 0 under mask)
-            try:
-                if original_array.shape[-1] == 4:
-                    alpha_mask = original_array[:, :, 3]
-                    mask_zero = (alpha_mask == 0)
-                    if mask_zero.any():
-                        greyscale_array[mask_zero] = 0
-            except Exception:
-                pass
-
-            try:
-                do_post = bool(cfg.get(cfg.ci_greyscale_post_enable)) if hasattr(cfg, 'ci_greyscale_post_enable') else False
-            except Exception:
-                do_post = False
-            if do_post:
-                greyscale_array = apply_smooth_dither(greyscale_array, palette_size)
-                # Re-apply transparency mask to ensure excluded areas remain zero
-                try:
-                    if original_array.shape[-1] == 4:
-                        alpha_mask = original_array[:, :, 3]
-                        greyscale_array[alpha_mask == 0] = 0
-                except Exception:
-                    pass
 
             if palette_size > 1:
                 scale = 255.0 / float(palette_size - 1)
             else:
                 scale = 0.0
             disp = (greyscale_array.astype(np.float32) * scale).astype(np.uint8)
-            # Preserve original alpha in the greyscale output if available
-            try:
-                if original_array.shape[-1] == 4:
-                    alpha_mask = original_array[:, :, 3].astype(np.uint8)
-                    la = np.stack([disp, alpha_mask], axis=2)
-                    greyscale_rgb = Image.fromarray(la, 'LA')
-                else:
-                    greyscale_rgb = Image.fromarray(disp, 'L')
-            except Exception:
-                greyscale_rgb = Image.fromarray(disp, 'L')
+            # Always produce single-channel greyscale without transparency masking
+            greyscale_rgb = Image.fromarray(disp, 'L')
 
             # Greyscale texture mapping removed
-
             self.progress_updated.emit(100, "Greyscale conversion complete!")
 
             # =====================
@@ -188,55 +151,18 @@ class SinglePaletteGenerationWorker(QThread):
             for grey_value in range(palette_size):
                 base_palette_array[grey_value] = grey_to_color[grey_value]
 
-            # Extra rows from additional textures removed
-
-            # Optional upscale to 256
-            palette_size_out = palette_size
-            try:
-                do_upscale = bool(cfg.get(cfg.ci_palette_upscale_to_256)) if hasattr(cfg, 'ci_palette_upscale_to_256') else False
-                sigma_cfg = float(cfg.get(cfg.ci_palette_upscale_sigma)) if hasattr(cfg, 'ci_palette_upscale_sigma') else 10.0
-            except Exception:
-                do_upscale = False
-                sigma_cfg = 10.0
-            upscale_sigma = float(sigma_cfg) / 10.0
-
-            if do_upscale and palette_size < 256:
-                base_palette_array = upscale_and_smooth_lut(base_palette_array, target_size=256, sigma=upscale_sigma)
-                # Remap greyscale indices to 0..255
-                if palette_size > 1:
-                    scale_u = 255.0 / float(palette_size - 1)
-                    greyscale_array = np.clip(np.round(greyscale_array.astype(np.float32) * scale_u), 0, 255).astype(np.uint8)
-                else:
-                    greyscale_array = np.zeros_like(greyscale_array, dtype=np.uint8)
-                palette_size_out = 256
-
             # Compose palette image
             palette_image = compose_palette_image(
                 rows=[base_palette_array],
                 row_height=self.palette_row_height,
-                palette_size=palette_size_out,
+                palette_size=palette_size,
                 pad_mode='gradient'
             )
 
             self.progress_updated.emit(50, "Applying Palette to greyscale for preview...")
             preview_image = apply_palette_to_greyscale(palette_image, greyscale_rgb)
 
-            if self.produce_color_report:
-                self.progress_updated.emit(80, "Creating color report...")
-                color_distribution = analyze_color_distribution(quantized_array)
-                color_report_data = []
-                for grey_value in range(palette_size_out):
-                    color = tuple(base_palette_array[grey_value])
-                    frequency = color_distribution.get(color, 0)
-                    color_report_data.append({
-                        'grey_value': int(grey_value),
-                        'color_rgb': [int(color[0]), int(color[1]), int(color[2])],
-                        'frequency': int(frequency),
-                        'frequency_percent': float((frequency / (height * width)) * 100)
-                    })
-            else:
-                color_distribution = {}
-                color_report_data = []
+            # Color report generation removed
 
             self.progress_updated.emit(100, "Palette creation complete!")
 
@@ -274,13 +200,7 @@ class SinglePaletteGenerationWorker(QThread):
 
                 # Saving of additional greyscale-conversion textures removed
 
-                # Optional: Save color report
-                color_report_path = None
-                if self.produce_color_report and color_report_data:
-                    color_report_path = os.path.join(self.output_dir, f"{base_name}_color_report.json")
-                    self.save_color_report(color_report_data, color_report_path)
-                    output_files['color_report'] = color_report_path
-                    logger.debug(f"Saved color report: {color_report_path}")
+                # Color report saving removed
 
                 pixmap = self.parent.pil_to_pixmap(quantized.convert("RGB"))
                 self.parent.update_preview(pixmap, self.parent.quantized_preview_label)
@@ -306,145 +226,6 @@ class SinglePaletteGenerationWorker(QThread):
             self.error_occurred.emit(str(e))
 
 
-    def save_color_report(self, color_report_data, file_path):
-        """Save color report data as JSON file"""
-        try:
-            # Convert color_report_data to JSON-serializable format
-            serializable_data = []
-            for color_data in color_report_data:
-                serializable_data.append({
-                    'grey_value': int(color_data['grey_value']),
-                    'color_rgb': [
-                        int(color_data['color_rgb'][0]),
-                        int(color_data['color_rgb'][1]),
-                        int(color_data['color_rgb'][2])
-                    ],
-                    'frequency': int(color_data['frequency']),
-                    'frequency_percent': float(color_data['frequency_percent'])
-                })
-
-            # Create a structured report
-            report = {
-                'timestamp': datetime.now().isoformat(),
-                'summary': {
-                    'total_colors': len(serializable_data),
-                    'most_used_colors': sorted(serializable_data, key=lambda x: x['frequency'], reverse=True)[:10],
-                    'least_used_colors': sorted(serializable_data, key=lambda x: x['frequency'])[:10]
-                },
-                'color_mapping': serializable_data
-            }
-
-            with open(file_path, 'w') as f:
-                json.dump(report, f, indent=2)
-
-            logger.debug(f"Color report saved to: {file_path}")
-        except Exception as e:
-            logger.error(f"Error saving color report: {str(e)}")
-            raise
-
-
-class ColorReportWidget(QWidget):
-    def __init__(self, color_report_data):
-        super().__init__()
-        self.color_report_data = color_report_data
-        self.init_ui()
-
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-
-        # Title
-        title = QLabel(f"Color to Greyscale Mapping Report - {cfg.get(cfg.ci_default_quant_method)} ({len(self.color_report_data)} colors)")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 16px; font-weight: bold; margin: 10px;")
-        layout.addWidget(title)
-
-        # Description
-        desc = QLabel(
-            f"All {len(self.color_report_data)} colors with their assigned greyscale values. Colors are sorted perceptually by luminance and hue to keep similar colors together. Frequency shows how often each color appears in the image.")
-        desc.setWordWrap(True)
-        desc.setStyleSheet("margin: 5px; color: #666;")
-        layout.addWidget(desc)
-
-        # Create scroll area for the color grid
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_content = QWidget()
-        scroll_layout = QGridLayout(scroll_content)
-
-        # Headers
-        headers = ["Grey Value", "Color", "RGB Values", "Frequency", "Percent"]
-        for col, header in enumerate(headers):
-            label = QLabel(header)
-            label.setStyleSheet("font-weight: bold; background-color: #e0e0e0; padding: 5px; border: 1px solid #ccc;")
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            scroll_layout.addWidget(label, 0, col)
-
-        # Add color rows
-        for row, color_data in enumerate(self.color_report_data, 1):
-            grey_value = color_data['grey_value']
-            color_rgb = color_data['color_rgb']
-            frequency = color_data['frequency']
-            percent = color_data['frequency_percent']
-
-            # Grey value
-            grey_label = QLabel(str(grey_value))
-            grey_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            grey_label.setStyleSheet("padding: 5px; border: 1px solid #ccc;")
-            scroll_layout.addWidget(grey_label, row, 0)
-
-            # Color swatch
-            color_widget = QLabel()
-            color_widget.setMinimumSize(60, 30)
-            color_widget.setStyleSheet(
-                f"background-color: rgb({color_rgb[0]}, {color_rgb[1]}, {color_rgb[2]}); border: 1px solid #ccc;")
-            color_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            scroll_layout.addWidget(color_widget, row, 1)
-
-            # RGB values
-            rgb_label = QLabel(f"R: {color_rgb[0]:3d} G: {color_rgb[1]:3d} B: {color_rgb[2]:3d}")
-            rgb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            rgb_label.setStyleSheet("padding: 5px; border: 1px solid #ccc; font-family: monospace;")
-            scroll_layout.addWidget(rgb_label, row, 2)
-
-            # Frequency
-            freq_label = QLabel(f"{frequency:,}")
-            freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            freq_label.setStyleSheet("padding: 5px; border: 1px solid #ccc; font-family: monospace;")
-            scroll_layout.addWidget(freq_label, row, 3)
-
-            # Percentage
-            percent_label = QLabel(f"{percent:.2f}%")
-            percent_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            # Color code based on frequency
-            if percent > 5:
-                percent_label.setStyleSheet(
-                    "padding: 5px; border: 1px solid #ccc; background-color: #ffcccc; font-family: monospace;")
-            elif percent > 1:
-                percent_label.setStyleSheet(
-                    "padding: 5px; border: 1px solid #ccc; background-color: #ffffcc; font-family: monospace;")
-            else:
-                percent_label.setStyleSheet(
-                    "padding: 5px; border: 1px solid #ccc; background-color: #ccffcc; font-family: monospace;")
-            scroll_layout.addWidget(percent_label, row, 4)
-
-        scroll_layout.setColumnStretch(2, 1)
-        scroll_area.setWidget(scroll_content)
-        layout.addWidget(scroll_area)
-
-        # Summary
-        total_colors = len(self.color_report_data)
-        dominant_colors = sorted(self.color_report_data, key=lambda x: x['frequency'], reverse=True)[:5]
-        dominant_summary = " | ".join(
-            [f"Grey {c['grey_value']}: {c['frequency_percent']:.1f}%" for c in dominant_colors])
-
-        summary = QLabel(f"Total colors: {total_colors} | Most used: {dominant_summary}")
-        summary.setStyleSheet("margin: 10px; padding: 5px; background-color: #f0f0f0; border: 1px solid #ccc;")
-        layout.addWidget(summary)
-
-
-from PySide6.QtCore import Signal
-
-
 class PaletteGenerator(BaseWidget):
     log_signal = Signal(str)
 
@@ -463,13 +244,7 @@ class PaletteGenerator(BaseWidget):
         self.debug_preview_label = None
         self.quantized_preview_label = None
         self.preview_label = None
-        # previous_data removed; no step-by-step orchestration
-        self.pivot = SegmentedWidget(self)
-        self.stackedWidget = QStackedWidget(self)
-        self.init_ui(parent)
-        self.pivot.setCurrentItem(self.main_tab.objectName())
-        self.boxLayout.addWidget(self.pivot, 0, Qt.AlignmentFlag.AlignLeft)
-        self.boxLayout.addWidget(self.stackedWidget)
+        self.init_ui()
         self.addButtonBarToBottom(self.generate_all_button)
         self.settings_widget = PaletteSettings(self)
         self.settings_drawer.addWidget(self.settings_widget)
@@ -477,45 +252,7 @@ class PaletteGenerator(BaseWidget):
         self.help_drawer.addWidget(self.help_widget)
 
 
-    def addSubInterface(self, widget: QWidget, objectName, text):
-        widget.setObjectName(objectName)
-        self.stackedWidget.addWidget(widget)
-        self.pivot.addItem(
-            routeKey=objectName,
-            text=text,
-            onClick=lambda: self.stackedWidget.setCurrentWidget(widget)
-        )
-
-    def onCurrentIndexChanged(self, index):
-        widget = self.stackedWidget.widget(index)
-        self.pivot.setCurrentItem(widget.objectName())
-
-    def init_ui(self, parent):
-        self.main_tab = QWidget()
-        main_layout = QVBoxLayout(self.main_tab)
-        main_layout.setContentsMargins(0,0,0,0)
-
-        self.setup_main_tab(main_layout)
-
-        self.report_tab = QWidget()
-        self.report_layout = QVBoxLayout(self.report_tab)
-        self.report_placeholder = QLabel("Generate a Palette first to see the color report")
-        self.report_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.report_placeholder.setStyleSheet("font-size: 14px; color: #666; margin: 50px;")
-        self.report_layout.addWidget(self.report_placeholder)
-
-        parent.setStatusTip("Ready to select an image")
-        logger.debug("UI initialization complete")
-
-        self.addSubInterface(self.main_tab, 'mainTab', 'Generator')
-        self.addSubInterface(self.report_tab, 'reportTab', 'Color Report')
-
-        self.stackedWidget.currentChanged.connect(self.onCurrentIndexChanged)
-        self.stackedWidget.setCurrentWidget(self.main_tab)
-
-
-    def setup_main_tab(self, layout):
-
+    def init_ui(self):
         # --- Image Selection Cards ---
         self.base_image_card = PushSettingCard(
             self.tr("Base Image"),
@@ -524,9 +261,8 @@ class PaletteGenerator(BaseWidget):
             "No image selected"
         )
         self.base_image_card.clicked.connect(self.on_base_image_card)
-        layout.addWidget(self.base_image_card)
+        self.addToFrame(self.base_image_card)
 
-        
         self.output_dir_card = PushSettingCard(
             self.tr("Output Directory"),
             CustomIcons.FOLDERRIGHT.icon(),
@@ -534,8 +270,7 @@ class PaletteGenerator(BaseWidget):
             self.tr("Will use image directory")
         )
         self.output_dir_card.clicked.connect(self.on_output_dir_card)
-        layout.addWidget(self.output_dir_card)
-
+        self.addToFrame(self.output_dir_card)
 
         # Generate button
         self.generate_all_button = PrimaryPushButton(icon=FIF.RIGHT_ARROW, text="Generate")
@@ -562,11 +297,7 @@ class PaletteGenerator(BaseWidget):
         preview_splitter.addWidget(make_preview_group("Preview (Palette Applied to Debug Texture)", "debug_preview_label"))
 
         preview_splitter.setSizes([400, 400, 400, 400])
-        layout.addWidget(preview_splitter)
-
-        # Progress masked by parent window; no local ProgressBar
-
-
+        self.addToFrame(preview_splitter)
 
     def on_base_image_card(self):
         last_dir = str(self.ci_last_image_dir.value or "")
@@ -595,12 +326,7 @@ class PaletteGenerator(BaseWidget):
             except Exception:
                 pass
 
-            # No longer showing Original Image preview in the UI
-
-            # Update button states
             self.update_button_states()
-
-    # Extra image and greyscale texture selection removed
 
     def on_output_dir_card(self):
         last_dir = str(self.ci_last_output_dir.value or (self.output_dir or ""))
@@ -666,7 +392,6 @@ class PaletteGenerator(BaseWidget):
             except Exception:
                 pass
 
-
         # Get working resolution from ConfigItem
         wr_val = cfg.get(cfg.ci_default_working_res).value
         if isinstance(wr_val, str) and str(wr_val).lower().startswith('original'):
@@ -691,7 +416,6 @@ class PaletteGenerator(BaseWidget):
             self.current_image_path,
             self.output_dir,
             working_resolution=working_resolution,
-            produce_color_report=bool(cfg.get(cfg.ci_produce_color_report)),
             palette_row_height=int(cfg.get(cfg.ci_palette_row_height) or 4)
         )
 
@@ -727,7 +451,6 @@ class PaletteGenerator(BaseWidget):
             except Exception:
                 pass
 
-
     def update_preview(self, pixmap, label):
         scaled_pixmap = pixmap.scaled(
             label.width() - 20,
@@ -737,18 +460,6 @@ class PaletteGenerator(BaseWidget):
         )
         label.setPixmap(scaled_pixmap)
         label.setText("")
-
-    def update_report_tab(self, color_report_data):
-        """Update the report tab with color mapping data"""
-        # Clear existing content
-        for i in reversed(range(self.report_layout.count())):
-            widget = self.report_layout.itemAt(i).widget()
-            if widget:
-                widget.setParent(None)
-
-        # Create new report widget
-        report_widget = ColorReportWidget(color_report_data)
-        self.report_layout.addWidget(report_widget)
 
     def set_buttons_enabled(self, enabled):
         """Enable or disable interactive controls during processing"""
