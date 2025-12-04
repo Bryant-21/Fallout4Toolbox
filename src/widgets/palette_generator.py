@@ -6,21 +6,18 @@ from PySide6 import QtWidgets
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QPixmap, QImage
-from PySide6.QtWidgets import (QVBoxLayout, QLabel, QFileDialog, QWidget, QMessageBox,
-                               QStackedWidget)
+from PySide6.QtWidgets import (QFileDialog, QWidget, QMessageBox)
 from qfluentwidgets import (
     PushSettingCard,
     ConfigItem,
     FluentIcon as FIF,
-    PrimaryPushButton,
-    SegmentedWidget
+    PrimaryPushButton
 )
 
 from src.help.palette_help import PaletteHelp
 from src.palette.palette_engine import perceptual_color_sort, \
     map_rgb_array_to_palette_indices, \
-    compose_palette_image, upscale_and_smooth_lut, \
-    adjacency_aware_color_sort_pmode
+    compose_palette_image, adjacency_aware_color_sort_pmode
 from src.settings.palette_settings import PaletteSettings
 from src.utils.appconfig import cfg
 from src.utils.dds_utils import save_image, load_image
@@ -28,8 +25,7 @@ from src.utils.filesystem_utils import get_app_root
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from src.utils.palette_utils import quantize_image, apply_palette_to_greyscale, apply_smooth_dither, \
-    get_palette
+from src.utils.palette_utils import quantize_image, apply_palette_to_greyscale, get_palette
 
 
 class SinglePaletteGenerationWorker(QThread):
@@ -99,9 +95,10 @@ class SinglePaletteGenerationWorker(QThread):
             # Work with palette indices and palette colors (avoid early RGB convert)
             quantized_indices = np.array(quantized, dtype=np.uint8)
             palette_colors = get_palette(quantized)
+            used_colors = int(len(palette_colors))
             # For algorithms that expect RGB arrays, materialize an RGB view via palette lookup
             quantized_array = palette_colors[quantized_indices]
-            logger.debug(f"Quantization complete: {palette_colors} unique colors")
+            logger.debug(f"Quantization complete: {used_colors} unique colors")
 
             # =====================
             # 2) GREYSCALE STEP
@@ -130,8 +127,8 @@ class SinglePaletteGenerationWorker(QThread):
             pal_int16 = np.array(sorted_colors, dtype=np.uint8).astype(np.int16)
             greyscale_array = map_rgb_array_to_palette_indices(quantized_array, lut_exact, pal_int16).astype(np.uint8)
 
-            if palette_size > 1:
-                scale = 255.0 / float(palette_size - 1)
+            if used_colors > 1:
+                scale = 255.0 / float(used_colors - 1)
             else:
                 scale = 0.0
             disp = (greyscale_array.astype(np.float32) * scale).astype(np.uint8)
@@ -146,16 +143,54 @@ class SinglePaletteGenerationWorker(QThread):
             # =====================
             self.progress_updated.emit(10, "Creating Palette...")
 
-            # Base palette row
-            base_palette_array = np.zeros((palette_size, 3), dtype=np.uint8)
-            for grey_value in range(palette_size):
-                base_palette_array[grey_value] = grey_to_color[grey_value]
+            # Helper to find the closest power of two to n
+            def closest_power_of_two(n: int) -> int:
+                if n <= 1:
+                    return 1
+                # lower and upper powers of two around n
+                up = 1 << (int(n - 1).bit_length())
+                low = up >> 1
+                # choose the closest; if tie, prefer the upper power (commonly desired for textures)
+                if (n - low) <= (up - n):
+                    return low if low > 0 else 1
+                return up
+
+            # Resample (expand or shrink) a palette row to the target length using linear interpolation
+            def resample_palette_row(colors_np: np.ndarray, target: int) -> np.ndarray:
+                n = int(colors_np.shape[0])
+                if n == target:
+                    return colors_np.astype(np.uint8)
+                if target <= 0:
+                    return colors_np[:0].astype(np.uint8)
+                if n == 0:
+                    return np.zeros((target, 3), dtype=np.uint8)
+                if n == 1:
+                    # replicate the single color
+                    return np.tile(colors_np[:1], (target, 1)).astype(np.uint8)
+                x = np.linspace(0, n - 1, num=n)
+                xi = np.linspace(0, n - 1, num=target)
+                out = np.stack([
+                    np.clip(np.interp(xi, x, colors_np[:, c]), 0, 255) for c in range(3)
+                ], axis=1)
+                return np.rint(out).astype(np.uint8)
+
+            # Build base palette row from actually used/sorted colors
+            base_palette_array = np.array(sorted_colors, dtype=np.uint8)
+
+            # If the quantized palette has fewer colors than requested, expand to the nearest power of two of the actual used size
+            target_palette_size = int(palette_size)
+            if used_colors < palette_size:
+                target_palette_size = closest_power_of_two(palette_size)
+                logger.info(
+                    f"Quantizer returned {used_colors} < requested {palette_size}; expanding linearly to closest power-of-two of requested: {target_palette_size}")
+            # Resample to target size if needed (will also downsample when used_colors > target)
+            base_palette_array = resample_palette_row(base_palette_array, target_palette_size)
 
             # Compose palette image
             palette_image = compose_palette_image(
                 rows=[base_palette_array],
                 row_height=self.palette_row_height,
-                palette_size=palette_size,
+                palette_size=target_palette_size,
                 pad_mode='gradient'
             )
 
