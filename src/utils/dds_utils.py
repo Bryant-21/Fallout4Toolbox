@@ -106,9 +106,9 @@ def convert_to_dds(input_path, output_path, is_palette=False, generate_mips=Fals
             # Use provided palette dimensions
             cmd = [
                 TEXCONV_EXE,
-                '-f', 'B8G8R8A8_UNORM',
+                '-f', 'BC1_UNORM',
                 '-y',
-                '-m', '1',
+                '-m', '7',
                 input_path,
                 '-o', out_dir
             ]

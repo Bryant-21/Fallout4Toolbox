@@ -465,6 +465,11 @@ class PaletteLUTGenerator(BaseWidget):
         self.size_32_btn.clicked.connect(lambda: self.set_island_size(32))
         size_buttons_layout.addWidget(self.size_32_btn)
 
+        self.size_96_btn = PushButton("96")
+        self.size_96_btn.setCheckable(True)
+        self.size_96_btn.clicked.connect(lambda: self.set_island_size(96))
+        size_buttons_layout.addWidget(self.size_96_btn)
+
         self.size_64_btn = PushButton("64")
         self.size_64_btn.setCheckable(True)
         self.size_64_btn.clicked.connect(lambda: self.set_island_size(64))
@@ -837,6 +842,7 @@ class PaletteLUTGenerator(BaseWidget):
         # Update button states
         self.size_16_btn.setChecked(size == 16)
         self.size_32_btn.setChecked(size == 32)
+        self.size_96_btn.setChecked(size == 96)
         self.size_64_btn.setChecked(size == 64)
         self.size_128_btn.setChecked(size == 128)
 
@@ -854,12 +860,13 @@ class PaletteLUTGenerator(BaseWidget):
         # Enable/disable size buttons based on available space
         self.size_16_btn.setEnabled(available_space >= 16)
         self.size_32_btn.setEnabled(available_space >= 32)
+        self.size_96_btn.setEnabled(available_space >= 96)
         self.size_64_btn.setEnabled(available_space >= 64)
         self.size_128_btn.setEnabled(available_space >= 128)
 
         # If current selection is too large, select largest available
         if self.current_island_size > available_space:
-            for size in [128, 64, 32, 16]:
+            for size in [128, 96, 64, 32, 16]:
                 if size <= available_space:
                     self.set_island_size(size)
                     break
@@ -1150,7 +1157,7 @@ class PaletteLUTGenerator(BaseWidget):
         slices = ndimage.find_objects(labels)
 
         hist_weight = 0.75
-        dist_threshold = (cfg.get(cfg.grouping_threshold) / 100.0)
+        dist_threshold = (cfg.get(cfg.ci_grouping_threshold) / 100.0)
 
         added_pixels = 0
 
@@ -1528,16 +1535,6 @@ class PaletteLUTGenerator(BaseWidget):
             else:
                 palette_to_game_scale = 255.0 / float(cfg.get(cfg.ci_default_palette_size) - 1)
 
-            def _scale_range_to_game(start: int, end: int) -> tuple[int, int]:
-                """Map a palette-range [start,end] to the game-expected 0-255 range."""
-                gs = int(round(start * palette_to_game_scale))
-                ge = int(round(end * palette_to_game_scale))
-                gs = max(0, min(255, gs))
-                ge = max(0, min(255, ge))
-                if ge < gs:
-                    ge = gs
-                return gs, ge
-
             # Get image dimensions
             height, width = self.canvas.original_image.shape[:2]
             alpha_channel = self.canvas.original_image[:, :, 3]
@@ -1748,7 +1745,7 @@ class PaletteLUTGenerator(BaseWidget):
             save_image(Image.fromarray(grayscale_filled, mode='L'), grayscale_path)
 
             # Generate LUT palette from actual colors
-            palette_height = 4
+            palette_height = 16
             palette_width = cfg.get(cfg.ci_default_palette_size)
             palette = np.zeros((palette_height, palette_width, 3), dtype=np.uint8)
 
