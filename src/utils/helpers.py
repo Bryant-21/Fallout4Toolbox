@@ -49,7 +49,11 @@ class BaseWidget(QFrame):
         self.buttons_layout = QHBoxLayout()
 
     def addButtonBarToBottom(self, widget: QWidget) -> None:
-        self.buttons_layout.addWidget(widget, stretch=1)
+        if widget:
+            self.buttons_layout.addWidget(widget, stretch=1)
+        else:
+            self.buttons_layout.addStretch()
+
         self.buttons_layout.addWidget(self.settings_button)
         self.buttons_layout.addWidget(self.help_button)
         self.boxLayout.addLayout(self.buttons_layout)
@@ -267,6 +271,8 @@ class RightDrawer(QFrame):
         # Ensure background is properly set
         self.updateBackground()
         self.current_widget = None
+        self.setVisible(False)
+
 
     def backgroundColor(self):
         return QColor(40, 40, 40) if isDarkTheme() else QColor(248, 248, 248)
@@ -336,7 +342,9 @@ class RightDrawer(QFrame):
     def open_drawer(self):
         """Animate drawer open"""
         self.raise_()
+        self.setVisible(True)
         self.show()
+
 
         if self._click_outside_to_close and not self._event_filter_installed:
             QApplication.instance().installEventFilter(self)
@@ -365,6 +373,7 @@ class RightDrawer(QFrame):
         self.animation.setEndValue(QRect(self.parent.width(), 0, self.drawer_width, self.parent.height()))
         self.animation.finished.connect(self._finalize_close)
         self.animation.start()
+        self.setVisible(False)
 
     def _finalize_close(self):
         """Clean up after closing animation"""

@@ -14,6 +14,7 @@ from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from src.utils.filesystem_utils import get_app_root
+from src.utils.palette_utils import apply_palette_to_greyscale
 
 
 class PaletteApplier(BaseWidget):
@@ -172,7 +173,7 @@ class PaletteApplier(BaseWidget):
             # Left: user-selected greyscale image, if any
             if self.greyscale_img is not None:
                 try:
-                    colored_left = self.apply_row_to_greyscale(row, self.greyscale_img)
+                    colored_left = apply_palette_to_greyscale(self.palette_img, self.greyscale_img, palette_row=row)
                     self.update_preview_label(self.preview_left_label, colored_left)
                 except Exception:
                     logger.exception("Failed to update left preview")
@@ -180,7 +181,7 @@ class PaletteApplier(BaseWidget):
             # Right: fixed grayscale_4k_cutout reference
             if self.greyscale_ref_img is not None:
                 try:
-                    colored_right = self.apply_row_to_greyscale(row, self.greyscale_ref_img)
+                    colored_right = apply_palette_to_greyscale(self.palette_img, self.greyscale_ref_img, palette_row=row)
                     self.update_preview_label(self.preview_right_label, colored_right)
                 except Exception:
                     logger.exception("Failed to update right preview")
@@ -275,26 +276,6 @@ class PaletteApplier(BaseWidget):
         if row_pixels.ndim == 1:
             row_pixels = np.expand_dims(row_pixels, axis=0)
         return row_pixels.astype(np.uint8)
-
-    @staticmethod
-    def apply_row_to_greyscale(palette_row: np.ndarray, grey_img: Image.Image) -> Image.Image:
-        # Map grey 0..255 to indices 0..(palette_width-1)
-        pw = palette_row.shape[0]
-        # Build lookup of 256 x 3
-        if pw == 256:
-            lut = palette_row
-        else:
-            # Interpolate along the row to 256 entries
-            x = np.linspace(0, pw - 1, num=pw)
-            xi = np.linspace(0, pw - 1, num=256)
-            # Interpolate each channel
-            lut = np.stack([
-                np.interp(xi, x, palette_row[:, c]).astype(np.uint8) for c in range(3)
-            ], axis=1)
-        # Apply LUT
-        g = np.array(grey_img, dtype=np.uint8)
-        colored = lut[g]  # shape (H, W, 3)
-        return Image.fromarray(colored, mode='RGB')
 
     def update_preview_label(self, label: QLabel, pil_image: Image.Image):
         """Fit image into the given label while keeping aspect ratio."""

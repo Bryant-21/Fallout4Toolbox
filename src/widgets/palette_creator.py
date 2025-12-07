@@ -422,7 +422,7 @@ class PaletteLUTGenerator(BaseWidget):
             CustomIcons.WIDTH.icon(),
             self.tr("Palette Size"),
             self.tr("Palette Size"),
-            texts=["128", "64", "32"],
+            texts=["256", "128", "64", "32"],
             parent=self
         )
 

@@ -55,6 +55,7 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         from src.widgets.create_archlist import ArchlistWidget
         from src.widgets.esp_template_renamer_tool import ESPTemplaterWidget
         from src.widgets.dds_resizer import DDSResizerWindow
+        from src.widgets.dds_inspector import DDSInspector
         from src.widgets.matfiles_copy import MaterialToolUI
         from src.settings.settings_widget import MainSettings
         from src.widgets.subgraph_maker import SubGraphMakerWindow
@@ -66,6 +67,8 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
 
         self.addSubInterface(DDSResizerWindow(self, "DDS Bulk Resizer"), CustomIcons.BULK.icon(), "DDS Bulk Resizer",
                              NavigationItemPosition.TOP)
+        self.addSubInterface(DDSInspector(self, "DDS Inspector"), CustomIcons.REPORT.icon() if hasattr(CustomIcons, 'REPORT') else FIF.INFO,
+                             "DDS Inspector", NavigationItemPosition.TOP)
         self.addSubInterface(ESPTemplaterWidget(self, "ESP Template Mod Maker"), CustomIcons.PUZZLE.icon(),
                              "ESP Template Mod Maker",
                              NavigationItemPosition.TOP)

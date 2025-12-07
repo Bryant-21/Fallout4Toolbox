@@ -221,3 +221,4 @@ release/
 
 resource/config.json
 /ChaiNNer/
+*.npz

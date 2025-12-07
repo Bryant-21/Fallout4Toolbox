@@ -18,7 +18,7 @@ class QuantSettings(GenericSettings):
             CustomIcons.WIDTH.icon(),
             self.tr("Palette Size"),
             self.tr("Number of colors to quantize to"),
-            texts=["128", "64", "32"],
+            texts=["256", "128", "64", "32"],
             parent=self
         )
 

@@ -66,7 +66,7 @@ class Config(QConfig):
                                                      validator=OptionsValidator(QuantAlgorithm),
                                                      serializer=EnumSerializer(QuantAlgorithm))
     ci_default_palette_size = OptionsConfigItem("palette", "default_palette_size", 128,
-                                                 OptionsValidator([128, 64, 32]))
+                                                 OptionsValidator([256, 128, 64, 32]))
     ci_default_working_res = OptionsConfigItem("palette", "default_working_resolution",
                                                     default=ResType.Original,
                                                     validator=OptionsValidator(ResType),
@@ -179,7 +179,7 @@ class Config(QConfig):
 
 YEAR = 2025
 AUTHOR = "Bryant21"
-VERSION = '1.0.14'
+VERSION = '2.0.0'
 NEXUS_URL = "https://next.nexusmods.com/profile/Bryant21"
 HELP_URL = "https://github.com/Bryant-21/Fallout4Toolbox"
 FEEDBACK_URL = "https://github.com/Bryant-21/Fallout4Toolbox/issues"

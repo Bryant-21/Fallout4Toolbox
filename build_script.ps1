@@ -45,7 +45,7 @@ Get-ChildItem $APP -Recurse -Include *.pdb,*.debug | Remove-Item -Force
 # Create release zip
 Write-Host "`n[3/3] Creating release zip..." -ForegroundColor Yellow
 $RELEASE_DIR = "release"
-$ZIP_NAME = "Fallout4Toolbox_v1.0.9.zip"
+$ZIP_NAME = "Fallout4Toolbox_v2.0.0.zip"
 if (-Not (Test-Path $RELEASE_DIR)) { New-Item -ItemType Directory -Path $RELEASE_DIR | Out-Null }
 
 $ZIP_PATH = Join-Path $RELEASE_DIR $ZIP_NAME

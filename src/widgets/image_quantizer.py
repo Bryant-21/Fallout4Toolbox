@@ -56,7 +56,7 @@ class ImageQuantizerWidget(BaseWidget):
             CustomIcons.WIDTH.icon(),
             self.tr("Colors"),
             self.tr("Number of colors to quantize to"),
-            texts=["128", "64", "32", "16", "8"],
+            texts=["256", "128", "64", "32", "16", "8"],
             parent=self
         )
 

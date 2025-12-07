@@ -123,7 +123,7 @@ def get_palette_row(palette_img, y=0) -> np.ndarray:
     return row_pixels.astype(np.uint8)
 
 
-def apply_palette_to_greyscale(palette_img: Image.Image, grey_img: Image.Image) -> Image.Image:
+def apply_palette_to_greyscale(palette_img: Image.Image, grey_img: Image.Image, palette_row=None) -> Image.Image:
     """Apply palette row to a greyscale image, preserving alpha if present.
 
     Accepts grey_img in modes:
@@ -132,7 +132,9 @@ def apply_palette_to_greyscale(palette_img: Image.Image, grey_img: Image.Image) 
       - 'RGB'/'RGBA' (uses the first channel as greyscale index; preserves alpha if present)
     Returns RGB if no alpha, RGBA if alpha present.
     """
-    palette_row = get_palette_row(palette_img)
+    if palette_row is None or palette_row.size == 0:
+        palette_row = get_palette_row(palette_img)
+
     pw = palette_row.shape[0]
 
     if pw == 256:
