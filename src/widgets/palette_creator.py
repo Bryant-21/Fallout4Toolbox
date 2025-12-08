@@ -14,11 +14,12 @@ from qfluentwidgets import PushSettingCard, PushButton, ScrollArea, PrimaryPushB
     FluentIcon as FIF, ConfigItem, RangeSettingCard
 from scipy import ndimage
 
-from help.palette_help import PaletteHelp
-from settings.palette_settings import PaletteSettings
+from src.help.palette_help import PaletteHelp
+from src.settings.palette_settings import PaletteSettings
 from src.utils.appconfig import cfg
 from src.utils.cards import ComboBoxSettingsCard, RadioSettingCard
 from src.utils.dds_utils import save_image
+from src.utils.filesystem_utils import get_app_root
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
@@ -33,7 +34,6 @@ class ImageCanvas(QLabel):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(400, 400)
-        self.setStyleSheet("background-color: #2b2b2b; border: 2px solid #555;")
 
         self.original_image = None
         self.display_pixmap = None
@@ -242,8 +242,6 @@ class ImageCanvas(QLabel):
         # Check if start pixel is transparent
         alpha = self.original_image[start_y, start_x, 3]
         if alpha == 0:
-            QMessageBox.warning(self.parent(), "Warning",
-                                "Clicked on transparent pixel. Please click on a non-transparent area.")
             return
 
         # Get the alpha channel
@@ -356,7 +354,7 @@ class PaletteLUTGenerator(BaseWidget):
 
         # UV set chooser (populated after model load)
         self.card_uv_set = ComboBoxSettingsCard(
-            icon=FIF.GLOBE,
+            icon=CustomIcons.COPY_POLY.icon(),
             title=self.tr("UV Set"),
             content=self.tr("If the model has multiple UV sets, choose which to use."),
         )
@@ -404,16 +402,15 @@ class PaletteLUTGenerator(BaseWidget):
         right_layout.addLayout(island_controls)
 
         self.auto_create_btn = PushButton("Auto Create Islands")
-        self.auto_create_btn = PushButton("Auto Create Islands")
         self.auto_create_btn.clicked.connect(self.auto_create_islands)
         right_layout.addWidget(self.auto_create_btn)
 
         # Grouping sensitivity slider for auto grouping
         self.row_card = RangeSettingCard(
             cfg.ci_grouping_threshold,
-            CustomIcons.SCALE.icon(),
+            CustomIcons.SCALE_POLY.icon(),
             self.tr("Auto Grouping Sensitivity"),
-            self.tr("Higher allows more colors to be selected"),
+            self.tr("Higher allows more colors to be selected (1 = strict, 200 = very loose)"),
         )
 
         # Palette size selector
@@ -450,30 +447,38 @@ class PaletteLUTGenerator(BaseWidget):
 
         self.size_8_btn = PushButton("8")
         self.size_8_btn.setCheckable(True)
-        self.size_8_btn.setChecked(True)
         self.size_8_btn.clicked.connect(lambda: self.set_island_size(8))
         size_buttons_layout.addWidget(self.size_8_btn)
 
         self.size_16_btn = PushButton("16")
         self.size_16_btn.setCheckable(True)
-        self.size_16_btn.setChecked(True)
         self.size_16_btn.clicked.connect(lambda: self.set_island_size(16))
         size_buttons_layout.addWidget(self.size_16_btn)
+
+        self.size_24_btn = PushButton("24")
+        self.size_24_btn.setCheckable(True)
+        self.size_24_btn.clicked.connect(lambda: self.set_island_size(24))
+        size_buttons_layout.addWidget(self.size_24_btn)
 
         self.size_32_btn = PushButton("32")
         self.size_32_btn.setCheckable(True)
         self.size_32_btn.clicked.connect(lambda: self.set_island_size(32))
         size_buttons_layout.addWidget(self.size_32_btn)
 
-        self.size_96_btn = PushButton("96")
-        self.size_96_btn.setCheckable(True)
-        self.size_96_btn.clicked.connect(lambda: self.set_island_size(96))
-        size_buttons_layout.addWidget(self.size_96_btn)
-
         self.size_64_btn = PushButton("64")
         self.size_64_btn.setCheckable(True)
         self.size_64_btn.clicked.connect(lambda: self.set_island_size(64))
         size_buttons_layout.addWidget(self.size_64_btn)
+
+        self.size_72_btn = PushButton("72")
+        self.size_72_btn.setCheckable(True)
+        self.size_72_btn.clicked.connect(lambda: self.set_island_size(72))
+        size_buttons_layout.addWidget(self.size_72_btn)
+
+        self.size_96_btn = PushButton("96")
+        self.size_96_btn.setCheckable(True)
+        self.size_96_btn.clicked.connect(lambda: self.set_island_size(96))
+        size_buttons_layout.addWidget(self.size_96_btn)
 
         self.size_128_btn = PushButton("128")
         self.size_128_btn.setCheckable(True)
@@ -486,6 +491,21 @@ class PaletteLUTGenerator(BaseWidget):
         gray_range_layout.addWidget(self.available_space_label)
 
         right_layout.addLayout(gray_range_layout)
+
+        # Track island size buttons for consistent state/indicator updates
+        self._island_size_buttons = {
+            8: self.size_8_btn,
+            16: self.size_16_btn,
+            24: self.size_24_btn,
+            32: self.size_32_btn,
+            64: self.size_64_btn,
+            72: self.size_72_btn,
+            96: self.size_96_btn,
+            128: self.size_128_btn,
+        }
+
+        # Apply initial island size selection indicator
+        self.set_island_size(self.current_island_size)
 
         # Selection controls
         right_layout.addWidget(QLabel("<b>Selection Tools:</b>"))
@@ -510,14 +530,10 @@ class PaletteLUTGenerator(BaseWidget):
         self.generate_both_btn = PrimaryPushButton("Generate Grayscale And Palette")
         self.generate_both_btn.clicked.connect(self.generate_both)
 
-        self.save_state_btn = PushButton("Save Islands")
-        self.save_state_btn.clicked.connect(self.save_island_state)
-
         self.load_state_btn = PushButton("Load Islands")
         self.load_state_btn.clicked.connect(self.load_island_state)
 
         self.buttons_layout.addWidget(self.generate_both_btn, stretch=1)
-        self.buttons_layout.addWidget(self.save_state_btn)
         self.buttons_layout.addWidget(self.load_state_btn)
         self.buttons_layout.addWidget(self.settings_button)
         self.buttons_layout.addWidget(self.help_button)
@@ -667,7 +683,12 @@ class PaletteLUTGenerator(BaseWidget):
         return metadata, mask_stack
 
     def save_island_state(self):
-        """Save current islands, ranges, and masks to a fast-loading NPZ."""
+        """Save current islands, ranges, and masks to a fast-loading NPZ.
+
+        NPZ files are always written into an "npz" folder under the application
+        root returned by get_app_root(). This method performs a one-off manual
+        save (e.g. when called from code) but does not prompt the user.
+        """
         if self.canvas.original_image is None or not self.image_path:
             QMessageBox.warning(self, "Warning", "Load an image and create Islands before saving.")
             return
@@ -678,27 +699,26 @@ class PaletteLUTGenerator(BaseWidget):
             QMessageBox.critical(self, "Error", f"Could not build Island state: {str(e)}")
             return
 
-        base_path, _ = os.path.splitext(self.image_path)
-        suggested = f"{base_path}_palette_state.npz"
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            self.tr("Save Palette Islands"),
-            suggested,
-            "Palette Islands (*.npz);;All Files (*)",
-        )
-
-        if not file_path:
-            return
-
         try:
+            root = get_app_root()
+            npz_dir = os.path.join(root, "npz")
+            os.makedirs(npz_dir, exist_ok=True)
+
+            base_name, _ = os.path.splitext(os.path.basename(self.image_path))
+            file_path = os.path.join(npz_dir, f"{base_name}_palette_state.npz")
+
             np.savez_compressed(file_path, metadata=json.dumps(metadata), masks=mask_stack)
             QMessageBox.information(self, "Saved", f"Islands saved to:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save Islands:\n{str(e)}")
 
     def _auto_save_island_state(self):
-        """Automatically persist island state next to the source image without prompting the user."""
+        """Automatically persist island state into the app-level npz folder.
+
+        This is used after generation and for background saves. Files are
+        placed under get_app_root()/"npz". Any errors are logged but do not
+        surface UI warnings.
+        """
         if self.canvas.original_image is None or not self.image_path:
             return None
 
@@ -708,9 +728,14 @@ class PaletteLUTGenerator(BaseWidget):
             logger.warning("Auto-save skipped: could not build state: %s", e, exc_info=True)
             return None
 
-        base_path, _ = os.path.splitext(self.image_path)
-        file_path = f"{base_path}_palette_state.npz"
         try:
+            root = get_app_root()
+            npz_dir = os.path.join(root, "npz")
+            os.makedirs(npz_dir, exist_ok=True)
+
+            base_name, _ = os.path.splitext(os.path.basename(self.image_path))
+            file_path = os.path.join(npz_dir, f"{base_name}_palette_state.npz")
+
             np.savez_compressed(file_path, metadata=json.dumps(metadata), masks=mask_stack)
             logger.info("Auto-saved palette Islands to %s", file_path)
             return file_path
@@ -720,10 +745,19 @@ class PaletteLUTGenerator(BaseWidget):
 
     def load_island_state(self):
         """Load islands, ranges, and masks from a saved NPZ state."""
+        # Default to the shared npz folder under the application root where
+        # island states are automatically saved.
+        default_dir = os.path.join(get_app_root(), "npz")
+        try:
+            os.makedirs(default_dir, exist_ok=True)
+        except Exception:
+            # If directory creation fails, fall back to the last-used/OS default.
+            default_dir = ""
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             self.tr("Load Palette Islands"),
-            "",
+            default_dir,
             "Palette Islands (*.npz);;All Files (*)",
         )
 
@@ -839,12 +873,13 @@ class PaletteLUTGenerator(BaseWidget):
         """Set the current island size"""
         self.current_island_size = size
 
-        # Update button states
-        self.size_16_btn.setChecked(size == 16)
-        self.size_32_btn.setChecked(size == 32)
-        self.size_96_btn.setChecked(size == 96)
-        self.size_64_btn.setChecked(size == 64)
-        self.size_128_btn.setChecked(size == 128)
+        # Update button states and visual indicator (underline) for the active size
+        for btn_size, btn in self._island_size_buttons.items():
+            is_active = btn_size == size
+            btn.setChecked(is_active)
+            font = btn.font()
+            font.setUnderline(is_active)
+            btn.setFont(font)
 
         # Update available space display
         self.update_available_space()
@@ -858,15 +893,12 @@ class PaletteLUTGenerator(BaseWidget):
         self.available_space_label.setText(f"Available: {available_space} gray values")
 
         # Enable/disable size buttons based on available space
-        self.size_16_btn.setEnabled(available_space >= 16)
-        self.size_32_btn.setEnabled(available_space >= 32)
-        self.size_96_btn.setEnabled(available_space >= 96)
-        self.size_64_btn.setEnabled(available_space >= 64)
-        self.size_128_btn.setEnabled(available_space >= 128)
+        for btn_size, btn in self._island_size_buttons.items():
+            btn.setEnabled(available_space >= btn_size)
 
         # If current selection is too large, select largest available
         if self.current_island_size > available_space:
-            for size in [128, 96, 64, 32, 16]:
+            for size in sorted(self._island_size_buttons.keys(), reverse=True):
                 if size <= available_space:
                     self.set_island_size(size)
                     break
@@ -1097,22 +1129,40 @@ class PaletteLUTGenerator(BaseWidget):
 
     def _dominant_bin_guard(self, comp_hist: np.ndarray, grp_hist: np.ndarray, share_gap_max: float = 0.25,
                             center_tol: float = 15.0) -> bool:
-        """Check dominant-bin compatibility between two histograms in Lab bin space."""
+        """Check dominant-bin compatibility between two histograms in Lab bin space.
+
+        Previously this required the exact same dominant bin; that proved too strict for
+        mixed regions (e.g., red + gray) where the dominant bin could shift even when
+        overall color is very similar. We now keep the strict path but allow a softer
+        acceptance when neither region has a very strong single-bin dominance and the
+        dominant bins are perceptually close.
+        """
         top_bin_comp = int(comp_hist.argmax())
         top_share_comp = float(comp_hist[top_bin_comp])
         top_bin_grp = int(grp_hist.argmax())
         top_share_grp = float(grp_hist[top_bin_grp])
 
-        if top_bin_comp != top_bin_grp:
-            return False
+        # Fast path: same dominant bin with similar weight and close centers
+        if top_bin_comp == top_bin_grp:
+            share_gap = abs(top_share_comp - top_share_grp)
+            if share_gap > share_gap_max:
+                return False
 
-        share_gap = abs(top_share_comp - top_share_grp)
-        if share_gap > share_gap_max:
-            return False
+            comp_center = self._lab_bin_center(top_bin_comp)
+            grp_center = self._lab_bin_center(top_bin_grp)
+            return float(np.linalg.norm(comp_center - grp_center)) <= center_tol
 
-        comp_center = self._lab_bin_center(top_bin_comp)
-        grp_center = self._lab_bin_center(top_bin_grp)
-        return float(np.linalg.norm(comp_center - grp_center)) <= center_tol
+        # Soft acceptance: allow different dominant bins when neither color is sharply dominant
+        # and the dominant bins are perceptually close.
+        if top_share_comp < 0.60 and top_share_grp < 0.60:
+            comp_center = self._lab_bin_center(top_bin_comp)
+            grp_center = self._lab_bin_center(top_bin_grp)
+            if float(np.linalg.norm(comp_center - grp_center)) <= center_tol * 1.25:
+                return True
+
+        # Final fallback: if overall overlap is already high, don't veto grouping
+        overlap = float(np.minimum(comp_hist, grp_hist).sum())
+        return overlap >= 0.55
 
     def magic_wand_select(self):
         """Find regions similar to current island and add them if unassigned."""
@@ -1140,9 +1190,12 @@ class PaletteLUTGenerator(BaseWidget):
         lab_image = self._lab_image(rgb)
         non_transparent = alpha > 0
 
-        # Union of already assigned pixels across all islands
+        # Union of already assigned pixels across all *other* islands
+        # so we can still expand the current island within partially selected regions.
         assigned_mask = np.zeros(non_transparent.shape, dtype=bool)
         for name, mask in self.canvas.all_masks.items():
+            if name == current_island:
+                continue
             if mask is not None:
                 assigned_mask |= mask
 
@@ -1188,9 +1241,17 @@ class PaletteLUTGenerator(BaseWidget):
             score = hist_weight * d_hist + (1.0 - hist_weight) * d_mean
 
             if score <= dist_threshold and self._dominant_bin_guard(hist, ref_hist):
-                # Accept this region into the current island
-                self.canvas.all_masks[current_island][sl][region_mask] = True
-                added_pixels += pixel_count
+                # Accept this region into the current island, counting only newly added pixels
+                if current_island not in self.canvas.all_masks:
+                    self.canvas.all_masks[current_island] = np.zeros(non_transparent.shape, dtype=bool)
+
+                target_mask_view = self.canvas.all_masks[current_island][sl]
+                existing_selection = target_mask_view[region_mask]
+                new_pixels = int((~existing_selection).sum())
+
+                if new_pixels > 0:
+                    target_mask_view[region_mask] = True
+                    added_pixels += new_pixels
 
         if added_pixels == 0:
             QMessageBox.information(self, "Magic Wand", "No additional matching regions found.")
@@ -1229,8 +1290,16 @@ class PaletteLUTGenerator(BaseWidget):
         if current_name not in self.canvas.all_masks:
             self.canvas.all_masks[current_name] = np.zeros(non_transparent.shape, dtype=bool)
 
-        self.canvas.all_masks[current_name] |= remaining
-        added_pixels = int(remaining.sum())
+        # Only count pixels that were not already in the current island
+        existing_mask = self.canvas.all_masks[current_name]
+        new_pixels_mask = remaining & ~existing_mask
+        added_pixels = int(new_pixels_mask.sum())
+
+        if added_pixels == 0:
+            QMessageBox.information(self, "Add Remaining", "No remaining unassigned pixels found.")
+            return
+
+        self.canvas.all_masks[current_name] |= new_pixels_mask
         QMessageBox.information(self, "Add Remaining", f"Added {added_pixels} pixels to {current_name}.")
         self.canvas.update_display()
 
@@ -1791,20 +1860,20 @@ class PaletteLUTGenerator(BaseWidget):
             palette_img = Image.fromarray(palette, mode='RGB')
             save_image(palette_img, palette_path, True)
 
-            # Save image with palette applied to grayscale (preserving alpha)
-            alpha_img = np.where(non_transparent, 255, 0).astype(np.uint8)
-            grey_with_alpha = np.dstack([grayscale_filled, alpha_img])
-            grey_pil = Image.fromarray(grey_with_alpha, mode='LA')
-            applied_img = apply_palette_to_greyscale(palette_img, grey_pil)
-            save_image(applied_img, applied_path, True)
+            # Auto-save islands NPZ into the shared app-root npz folder
+            npz_path = self._auto_save_island_state()
+            if npz_path:
+                logger.info("Palette islands NPZ saved to %s", npz_path)
 
-            QMessageBox.information(self, "Success",
-                                    f"Files generated successfully!\n\n"
-                                    f"Grayscale: {grayscale_path}\n"
-                                    f"Palette: {palette_path}\n"
-                                    f"Palette applied preview: {applied_path}\n\n"
-                                    f"Total Islands Processed: {len(self.islands)}\n"
-                                    f"Unselected pixels: {'Yes' if unselected_pixels.any() else 'None'}\n\n")
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Files generated successfully!\n\n"
+                f"Grayscale: {grayscale_path}\n"
+                f"Palette: {palette_path}\n"
+                f"Total Islands Processed: {len(self.islands)}\n"
+                f"Unselected pixels: {'Yes' if unselected_pixels.any() else 'None'}\n\n",
+            )
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to generate files:\n{str(e)}")

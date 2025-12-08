@@ -15,8 +15,8 @@ from qfluentwidgets import (
     FluentIcon as FIF
 )
 
-from help.convertpalette_help import PaletteConvertHelp
-from settings.palette_settings import PaletteSettings
+from src.help.convertpalette_help import PaletteConvertHelp
+from src.settings.palette_settings import PaletteSettings
 from src.utils.appconfig import cfg
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons

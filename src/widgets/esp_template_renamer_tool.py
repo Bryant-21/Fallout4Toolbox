@@ -12,6 +12,7 @@ from src.utils.appconfig import cfg
 from src.utils.cards import TextSettingCard
 from src.utils.helpers import BaseWidget
 from src.utils.logging_utils import logger
+from src.utils.icons import CustomIcons
 
 # Minimalistic ESP EDID replacer for Fallout 4/Skyrim-style ESPs based on xEdit source.
 # This does NOT fully parse the file. It scans for subrecords named 'EDID',
@@ -231,7 +232,7 @@ class ESPTemplaterWidget(BaseWidget):
         # Setting cards
         self.src_card = PushSettingCard(
             self.tr("Template ESP"),
-            FIF.FOLDER,
+            CustomIcons.FILE.icon(stroke=True),
             self.tr("Select ESP Template"),
             self.src_cfg.value or ""
         )

@@ -15,12 +15,12 @@ from qfluentwidgets import (
     SwitchSettingCard, PushButton,
 )
 
-from help.nif_help import NifHelp
-from settings.basic_settings import BasicSettings
+from src.help.nif_help import NifHelp
+from src.settings.basic_settings import BasicSettings
 from src.utils.appconfig import cfg
 from src.utils.capabilities import CAPABILITIES
 from src.utils.cards import ComboBoxSettingsCard
-from src.utils.helpers import BaseWidget
+from src.utils.helpers import BaseWidget, ImagePreviewPane, ImageCanvas
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from src.utils.dds_utils import load_image
@@ -89,7 +89,7 @@ class SingleModelUVPadWidget(BaseWidget):
 
         # UV set chooser (populated after model load)
         self.card_uv_set = ComboBoxSettingsCard(
-            icon=FIF.GLOBE,
+            icon=CustomIcons.COPY_POLY.icon(),
             title=self.tr("UV Set"),
             content=self.tr("If the model has multiple UV sets, choose which to use."),
         )
@@ -113,16 +113,13 @@ class SingleModelUVPadWidget(BaseWidget):
         self.btn_preview = PushButton(icon=FIF.ZOOM_IN, text="Preview")
         self.btn_save = PrimaryPushButton(icon=FIF.SAVE, text="Save")
 
-        # Match nif_texture_edit dual preview layout
-        self.original_label = QLabel(self.tr("Original"))
-        self.original_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.original_label.setMinimumSize(450, 450)
-        self.original_label.setStyleSheet("border: 1px dashed gray;")
-
-        self.masked_label = QLabel(self.tr("No-Padding Preview"))
-        self.masked_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.masked_label.setMinimumSize(450, 450)
-        self.masked_label.setStyleSheet("border: 1px dashed gray;")
+        # Match nif_texture_edit dual preview layout using resizable splitter
+        self.preview_pane = ImagePreviewPane(
+            self.tr("Original"),
+            self.tr("No-Padding"),
+            parent=self,
+            minimum_canvas_size=450,
+        )
 
         self.addToFrame(self.card_pick_model)
         self.addToFrame(self.card_pick_texture)
@@ -144,21 +141,13 @@ class SingleModelUVPadWidget(BaseWidget):
         self.fix_scaled_uv = SwitchSettingCard(
             configItem=cfg.scale_uvs,
             title=self.tr("Scale UV"),
-            icon=CustomIcons.ENHANCE.icon(),
+            icon=CustomIcons.FIT.icon(),
             content=self.tr("Sometimes needed, not sure why."),
         )
 
         self.addToFrame(self.fix_scaled_uv)
 
-        grid = QGridLayout()
-        grid.addWidget(QLabel(self.tr("Original")), 0, 0)
-        grid.addWidget(QLabel(self.tr("No-Padding")), 0, 1)
-        grid.addWidget(self.original_label, 1, 0)
-        grid.addWidget(self.masked_label, 1, 1)
-        container = QWidget()
-        container.setLayout(grid)
-        self.boxLayout.addStretch(1)
-        self.addToFrame(container)
+        self.addToFrame(self.preview_pane)
 
         self.buttons_layout.addWidget(self.btn_preview, stretch=1)
         self.addButtonBarToBottom(self.btn_save)
@@ -325,16 +314,16 @@ class SingleModelUVPadWidget(BaseWidget):
                 return
             try:
                 orig = load_image(str(self.texture_path), 'RGBA')
-                self._display_on_label(orig, self.original_label)
+                self._display_on_label(orig, self.preview_pane.left_canvas)
             except Exception as e:
                 InfoBar.error(self.tr("Failed to load texture"), str(e), parent=self)
                 return
 
             out = self._process()
             if out is None:
-                self.masked_label.setText(self.tr("No mask produced"))
+                self.preview_pane.right_canvas.setText(self.tr("No mask produced"))
                 return
-            self._display_on_label(out, self.masked_label)
+            self._display_on_label(out, self.preview_pane.right_canvas)
         finally:
             p = getattr(self, 'parent', None)
             if p and hasattr(p, 'complete_loader'):
@@ -408,20 +397,25 @@ class SingleModelUVPadWidget(BaseWidget):
                     pass
 
 
-    def _display_on_label(self, image: Image.Image, label: QLabel) -> None:
-        """Display a PIL Image on a QLabel, scaled to fit while keeping aspect ratio."""
+    def _display_on_label(self, image: Image.Image, label: ImageCanvas) -> None:
+        """Display a PIL Image on a resizable canvas, falling back to label scaling."""
+        if image is None:
+            label.clear()
+            return
         try:
-            from PySide6.QtGui import QImage, QPixmap
-            rgba = image.convert('RGBA')
-            w, h = rgba.size
-            data = rgba.tobytes('raw', 'RGBA')
-            qimg = QImage(data, w, h, QImage.Format.Format_RGBA8888)
-            pixmap = QPixmap.fromImage(qimg)
-            label.setPixmap(pixmap.scaled(
-                label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            ))
+            label.set_image(image)
         except Exception:
-            # As a fallback, set text
-            label.setText(self.tr("Preview unavailable"))
+            try:
+                from PySide6.QtGui import QImage, QPixmap
+                rgba = image.convert('RGBA')
+                w, h = rgba.size
+                data = rgba.tobytes('raw', 'RGBA')
+                qimg = QImage(data, w, h, QImage.Format.Format_RGBA8888)
+                pixmap = QPixmap.fromImage(qimg)
+                label.setPixmap(pixmap.scaled(
+                    label.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                ))
+            except Exception:
+                label.setText(self.tr("Preview unavailable"))

@@ -31,9 +31,7 @@ class DDSInspector(BaseWidget):
         # --- File selector card ---
         self.dds_card = PushSettingCard(
             self.tr("DDS Texture"),
-            (CustomIcons.FOLDER_IMAGE.icon()
-             if hasattr(CustomIcons, "FOLDER_IMAGE")
-             else CustomIcons.IMAGE.icon()),
+            CustomIcons.IMAGE.icon(stroke=True),
             self.tr("Select a DDS texture to inspect"),
             self.tr("No DDS selected"),
         )
@@ -42,11 +40,9 @@ class DDSInspector(BaseWidget):
 
         # Optional explicit refresh button (re-run texdiag / reload preview)
         self.refresh_button = PrimaryPushButton(
-            icon=CustomIcons.F5.icon() if hasattr(CustomIcons, "F5") else None,
             text=self.tr("Refresh Info"),
         )
         self.refresh_button.clicked.connect(self.refresh)
-        self.addButtonBarToBottom(self.refresh_button)
 
         # --- Main content: left info, right preview ---
         container = QWidget(self)
@@ -69,6 +65,8 @@ class DDSInspector(BaseWidget):
         layout.addWidget(self.preview_label, 3)
 
         self.addToFrame(container)
+        self.addButtonBarToBottom(self.refresh_button)
+
 
     # -------------- Actions --------------
     def on_select_dds(self):

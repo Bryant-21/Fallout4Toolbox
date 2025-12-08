@@ -71,7 +71,8 @@ class Config(QConfig):
                                                     default=ResType.Original,
                                                     validator=OptionsValidator(ResType),
                                                     serializer=EnumSerializer(ResType))
-    ci_grouping_threshold = RangeConfigItem("palette", "grouping_threshold", 33, RangeValidator(1, 100))
+    # Auto grouping sensitivity (1-200): >100 enables extra-lenient matching for mixed regions
+    ci_grouping_threshold = RangeConfigItem("palette", "grouping_threshold", 33, RangeValidator(1, 200))
 
 
     ci_produce_color_report = ConfigItem("palette", "produce_color_report", False, BoolValidator())
@@ -105,6 +106,9 @@ class Config(QConfig):
     ci_palette_upscale_sigma = RangeConfigItem("palette", "palette_upscale_sigma", 10, RangeValidator(0, 100))
     # Quantized image dithering
     ci_quantize_dither_enable = ConfigItem("palette", "quantize_dither_enable", False, BoolValidator())
+    # Palette filtering type: "linear" interpolates colors smoothly, "nearest" preserves exact colors
+    ci_palette_filter_type = OptionsConfigItem("palette", "palette_filter_type", "linear",
+                                                OptionsValidator(["linear", "nearest", "cubic", "gaussian", "cubic_gaussian"]))
 
     #theme
     themeColor = ColorConfigItem("QFluentWidgets", "ThemeColor", '#ffa11d', restart=True)

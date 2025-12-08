@@ -6,7 +6,7 @@ from typing import Optional
 from PIL import Image
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QWidget, QLabel, QFileDialog, QMessageBox, QGridLayout
+from PySide6.QtWidgets import QWidget, QFileDialog, QMessageBox
 from qfluentwidgets import (
     PushSettingCard,
     PrimaryPushButton,
@@ -14,10 +14,10 @@ from qfluentwidgets import (
     FluentIcon as FIF, SwitchSettingCard, PushButton,
 )
 
-from help.unnif_help import NifUVHelp
-from settings.basic_settings import BasicSettings
+from src.help.unnif_help import NifUVHelp
+from src.settings.basic_settings import BasicSettings
 from src.utils.appconfig import cfg
-from src.utils.helpers import BaseWidget
+from src.utils.helpers import BaseWidget, ImagePreviewPane
 from src.utils.icons import CustomIcons
 from src.utils.imageutils import dilation_fill_static
 from src.utils.logging_utils import logger
@@ -217,26 +217,14 @@ class UVPaddingRemoverWidget(BaseWidget):
 
         self.addToFrame(self.chk_color_fill)
 
-        # Previews
-        self.original_label = QLabel(self.tr("Original"))
-        self.original_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.original_label.setMinimumSize(450, 450)
-        self.original_label.setStyleSheet("border: 1px dashed gray;")
-
-        self.masked_label = QLabel(self.tr("No-Padding Preview"))
-        self.masked_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.masked_label.setMinimumSize(450, 450)
-        self.masked_label.setStyleSheet("border: 1px dashed gray;")
-
-        grid = QGridLayout()
-        grid.addWidget(QLabel(self.tr("Original")), 0, 0)
-        grid.addWidget(QLabel(self.tr("No-Padding")), 0, 1)
-        grid.addWidget(self.original_label, 1, 0)
-        grid.addWidget(self.masked_label, 1, 1)
-        container = QWidget()
-        container.setLayout(grid)
-        self.boxLayout.addStretch(1)
-        self.addToFrame(container)
+        # Previews using resizable splitter canvases
+        self.preview_pane = ImagePreviewPane(
+            self.tr("Original"),
+            self.tr("No-Padding"),
+            parent=self,
+            minimum_canvas_size=450,
+        )
+        self.addToFrame(self.preview_pane)
 
         # Buttons
         self.btn_pick_file = PushButton(icon=FIF.ZOOM_IN, text=self.tr("Preview One Texture"))
@@ -309,16 +297,16 @@ class UVPaddingRemoverWidget(BaseWidget):
             orig = load_image(file_path)
             self.current_original = orig
             self.current_texture_path = file_path
-            self._display_on_label(orig, self.original_label)
+            self._display_on_label(orig, self.preview_pane.left_canvas)
 
             result = remove_padding_from_texture_using_nif_uv(Path(file_path), Path(data_root))
             if result is None:
                 InfoBar.info(title=self.tr("No match"), content=self.tr("Could not build UV mask for this texture."), duration=3000, parent=self)
-                self.masked_label.setText(self.tr("No mask produced"))
+                self.preview_pane.right_canvas.setText(self.tr("No mask produced"))
                 self.current_result = None
                 return
             self.current_result = result
-            self._display_on_label(result, self.masked_label)
+            self._display_on_label(result, self.preview_pane.right_canvas)
             InfoBar.success(title=self.tr("Preview ready"), content=self.tr("UV mask applied"), duration=2000, parent=self)
         except Exception as e:
             traceback.print_exc()
@@ -412,8 +400,21 @@ class UVPaddingRemoverWidget(BaseWidget):
                     pass
 
     # ---------------- helpers ----------------
-    def _display_on_label(self, image: Image.Image, label: QLabel):
-        # convert PIL to QImage/QPixmap
+    def _display_on_label(self, image: Image.Image, label) -> None:
+        """Display a PIL Image on a resizable canvas or label."""
+        if image is None:
+            try:
+                label.clear()
+                return
+            except Exception:
+                pass
+        try:
+            if hasattr(label, 'set_image'):
+                label.set_image(image)
+                return
+        except Exception:
+            pass
+        # Fallback to legacy QLabel scaling
         rgba = image.convert('RGBA')
         w, h = rgba.size
         data = rgba.tobytes('raw', 'RGBA')

@@ -7,3 +7,4 @@ imagequant
 clr-loader==0.2.8
 pythonnet==3.0.5
 numba
+opencv-python

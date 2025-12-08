@@ -448,7 +448,7 @@ class MaterialToolUI(BaseWidget):
         self.grayscale_scale_card = DoubleSpinSettingCard(
             cfg.grayscale_to_palette_scale_cfg,
             FIF.EDIT,
-            self.tr("Grayscale To Palette Scale")
+            self.tr("Grayscale To Palette Scale"),
         )
         self.addToFrame(self.grayscale_scale_card)
 

@@ -5,16 +5,17 @@ import numpy as np
 from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QImage
-from PySide6.QtWidgets import QWidget, QLabel, QFileDialog
-from qfluentwidgets import PushSettingCard, RangeSettingCard
-from qfluentwidgets import RangeConfigItem, RangeValidator
+from PySide6.QtWidgets import QWidget, QFileDialog
+from qfluentwidgets import RangeConfigItem, RangeValidator, FluentIcon as FIF, PushSettingCard, RangeSettingCard
 
 from src.utils.dds_utils import load_image
-from src.utils.helpers import BaseWidget
+from src.utils.helpers import BaseWidget, ImagePreviewPane, ImageCanvas
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from src.utils.filesystem_utils import get_app_root
 from src.utils.palette_utils import apply_palette_to_greyscale
+from src.utils.appconfig import cfg
+from src.utils.cards import ComboBoxSettingsCard
 
 
 class PaletteApplier(BaseWidget):
@@ -42,7 +43,7 @@ class PaletteApplier(BaseWidget):
         self.palette_card = PushSettingCard(
             self.tr("Palette Texture"),
             CustomIcons.PALETTE.icon() if hasattr(CustomIcons, 'PALETTE') else CustomIcons.IMAGE.icon(),
-            self.tr("Select a color palette image (width = palette size; row applies to greyscale)"),
+            self.tr("Select Palette Image"),
             self.tr("No palette selected")
         )
         self.palette_card.clicked.connect(self.on_select_palette)
@@ -50,7 +51,7 @@ class PaletteApplier(BaseWidget):
         self.greyscale_card = PushSettingCard(
             self.tr("Greyscale Image"),
             CustomIcons.GREYSCALE.icon() if hasattr(CustomIcons, 'GREYSCALE') else CustomIcons.IMAGE.icon(),
-            self.tr("Select a greyscale image to colorize using the palette row"),
+            self.tr("Select a Greyscale Image"),
             self.tr("No greyscale selected")
         )
         self.greyscale_card.clicked.connect(self.on_select_greyscale)
@@ -59,7 +60,7 @@ class PaletteApplier(BaseWidget):
         self.row_index_cfg = RangeConfigItem("palette_applier", "row_index", 0, RangeValidator(0, 256))
         self.row_card = RangeSettingCard(
             self.row_index_cfg,
-            CustomIcons.HEIGHT.icon() if hasattr(CustomIcons, 'HEIGHT') else CustomIcons.SPARK.icon(),
+            CustomIcons.ROWS.icon(stroke=True),
             self.tr("Palette Pixel Row"),
             self.tr("Where to get the colors"),
         )
@@ -67,31 +68,31 @@ class PaletteApplier(BaseWidget):
         self.row_card.valueChanged.connect(self.update_preview)
 
         # Previews: left = selected greyscale, right = fixed grayscale_4k_cutout reference
-        self.preview_left_label = QLabel(self.tr("Selected texture preview"))
-        self.preview_left_label.setAlignment(Qt.AlignCenter)
-        self.preview_left_label.setMinimumSize(400, 400)
+        self.preview_pane = ImagePreviewPane(
+            self.tr("Selected texture preview"),
+            self.tr("grayscale_4k_cutout reference"),
+            parent=self,
+            minimum_canvas_size=450,
+        )
 
-        self.preview_right_label = QLabel(self.tr("grayscale_4k_cutout reference"))
-        self.preview_right_label.setAlignment(Qt.AlignCenter)
-        self.preview_right_label.setMinimumSize(400, 400)
+        self.card_uv_set = ComboBoxSettingsCard(
+            icon=FIF.FILTER,
+            title=self.tr("Filter Mode"),
+            content=self.tr(
+                "The game applies a bilinear filter onto palettes from what I can tell. This causes some color bleeding"),
+            configItem=cfg.ci_palette_filter_type
+        )
 
+        cfg.ci_palette_filter_type.valueChanged.connect(self.update_preview)
 
         # Layout
         self.addToFrame(self.palette_card)
         self.addToFrame(self.greyscale_card)
         self.addToFrame(self.row_card)
+        self.addToFrame(self.card_uv_set)
 
         # Two previews side-by-side
-        from PySide6.QtWidgets import QHBoxLayout, QWidget as QtWidget
-
-        previews_container = QtWidget(self)
-        previews_layout = QHBoxLayout(previews_container)
-        previews_layout.setContentsMargins(0, 0, 0, 0)
-        previews_layout.setSpacing(12)
-        previews_layout.addWidget(self.preview_left_label)
-        previews_layout.addWidget(self.preview_right_label)
-
-        self.addToFrame(previews_container)
+        self.addToFrame(self.preview_pane)
 
         # Ensure the fixed reference greyscale is loaded up-front
         self._ensure_default_greyscale_loaded()
@@ -100,8 +101,7 @@ class PaletteApplier(BaseWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         # Rescale previews when the widget is resized
-        if (self.preview_left_label.pixmap() is not None) or (self.preview_right_label.pixmap() is not None):
-            self.update_preview()
+        self.update_preview()
 
     # -------------- Events --------------
     def on_select_palette(self):
@@ -174,7 +174,7 @@ class PaletteApplier(BaseWidget):
             if self.greyscale_img is not None:
                 try:
                     colored_left = apply_palette_to_greyscale(self.palette_img, self.greyscale_img, palette_row=row)
-                    self.update_preview_label(self.preview_left_label, colored_left)
+                    self.update_preview_label(self.preview_pane.left_canvas, colored_left)
                 except Exception:
                     logger.exception("Failed to update left preview")
 
@@ -182,7 +182,7 @@ class PaletteApplier(BaseWidget):
             if self.greyscale_ref_img is not None:
                 try:
                     colored_right = apply_palette_to_greyscale(self.palette_img, self.greyscale_ref_img, palette_row=row)
-                    self.update_preview_label(self.preview_right_label, colored_right)
+                    self.update_preview_label(self.preview_pane.right_canvas, colored_right)
                 except Exception:
                     logger.exception("Failed to update right preview")
         except Exception as e:
@@ -277,7 +277,7 @@ class PaletteApplier(BaseWidget):
             row_pixels = np.expand_dims(row_pixels, axis=0)
         return row_pixels.astype(np.uint8)
 
-    def update_preview_label(self, label: QLabel, pil_image: Image.Image):
+    def update_preview_label(self, label: ImageCanvas, pil_image: Image.Image):
         """Fit image into the given label while keeping aspect ratio."""
         if label is None:
             return

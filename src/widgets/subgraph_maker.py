@@ -10,8 +10,8 @@ from qfluentwidgets import (
     ConfigItem,
 )
 
-from help.subgraph_help import SubgraphHelp
-from settings.basic_settings import BasicSettings
+from src.help.subgraph_help import SubgraphHelp
+from src.settings.basic_settings import BasicSettings
 from src.utils.cards import TextSettingCard
 from src.utils.helpers import BaseWidget
 from src.utils.logging_utils import logger

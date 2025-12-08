@@ -45,6 +45,28 @@ class PaletteSettings(GenericSettings):
             self.tr("2 to 8"), step=2
         )
 
+        self.filter_type_card = OptionsSettingCard(
+            cfg.ci_palette_filter_type,
+            CustomIcons.QUANT.icon(),
+            self.tr("Palette Filter Type"),
+            self.tr("How colors are sampled when applying palette to greyscale"),
+            texts=[
+                "linear - Smooth color interpolation (default)",
+                "nearest - Exact colors, no blending (better for game LUTs)",
+                "cubic - Smoother transitions, reduces harsh jumps",
+                "gaussian - Blurs transitions to reduce banding",
+                "cubic_gaussian - Cubic + gaussian for smoothest results"
+            ],
+            parent=self
+        )
+
+        self.upscale_palette_switch = SwitchSettingCard(
+            icon=CustomIcons.RESCALE.icon(stroke=True),
+            title=self.tr("Upscale Palette To 256"),
+            content=self.tr("If palette has < 256 colors, interpolate and smooth to 256 to reduce harsh transitions"),
+            configItem=cfg.ci_palette_upscale_to_256
+        )
+
         self.__initWidget()
 
     def __initWidget(self):
@@ -52,6 +74,8 @@ class PaletteSettings(GenericSettings):
         self.settings_group.addSettingCard(self.palette_size_card)
         self.settings_group.addSettingCard(self.method_card)
         self.settings_group.addSettingCard(self.row_height_card)
+        self.settings_group.addSettingCard(self.filter_type_card)
+        self.settings_group.addSettingCard(self.upscale_palette_switch)
 
         # add cards to group
         self.setupLayout()

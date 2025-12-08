@@ -2,7 +2,8 @@ import imagequant
 import numpy as np
 from PIL import Image
 from PIL.Image import Quantize, Palette
-
+from scipy import interpolate
+import cv2
 from src.utils.appconfig import QuantAlgorithm
 from src.utils.appconfig import cfg
 from src.utils.logging_utils import logger
@@ -123,29 +124,111 @@ def get_palette_row(palette_img, y=0) -> np.ndarray:
     return row_pixels.astype(np.uint8)
 
 
-def apply_palette_to_greyscale(palette_img: Image.Image, grey_img: Image.Image, palette_row=None) -> Image.Image:
+def apply_palette_to_greyscale(palette_img: Image.Image, grey_img: Image.Image, palette_row=None, filter_type=None) -> Image.Image:
     """Apply palette row to a greyscale image, preserving alpha if present.
 
     Accepts grey_img in modes:
       - 'L' (grayscale)
       - 'LA' (grayscale with alpha)
       - 'RGB'/'RGBA' (uses the first channel as greyscale index; preserves alpha if present)
+    
+    Args:
+        palette_img: The palette image to sample colors from
+        grey_img: The greyscale image to colorize
+        palette_row: Optional pre-extracted palette row
+        filter_type: "linear" for smooth interpolation, "nearest" for exact color preservation.
+                     If None, uses the config setting ci_palette_filter_type.
+    
     Returns RGB if no alpha, RGBA if alpha present.
     """
     if palette_row is None or palette_row.size == 0:
         palette_row = get_palette_row(palette_img)
+
+    # Get filter type from config if not specified
+    if filter_type is None:
+        filter_type = cfg.get(cfg.ci_palette_filter_type)
 
     pw = palette_row.shape[0]
 
     if pw == 256:
         lut = palette_row
     else:
-        # Interpolate along the row to 256 entries
-        x = np.linspace(0, pw - 1, num=pw)
-        xi = np.linspace(0, pw - 1, num=256)
-        lut = np.stack([
-            np.interp(xi, x, palette_row[:, c]).astype(np.uint8) for c in range(3)
-        ], axis=1)
+        if filter_type == "nearest":
+            # Nearest neighbor: map each of 256 greyscale values to closest palette index
+            # This preserves exact colors without blending
+            indices = np.round(np.linspace(0, pw - 1, num=256)).astype(int)
+            lut = palette_row[indices]
+
+        elif filter_type == "linear":
+            # Linear interpolation: smooth blending between colors (default)
+            x = np.linspace(0, pw - 1, num=pw)
+            xi = np.linspace(0, pw - 1, num=256)
+            lut = np.stack([
+                np.interp(xi, x, palette_row[:, c]).astype(np.uint8) for c in range(3)
+            ], axis=1)
+
+        elif filter_type == "cubic":
+            # Cubic interpolation: smoother blending using 4 neighboring points
+            # Creates a more continuous gradient with less "knot" feeling
+            x = np.linspace(0, pw - 1, num=pw)
+            xi = np.linspace(0, pw - 1, num=256)
+
+            lut = np.zeros((256, 3), dtype=np.uint8)
+            for c in range(3):
+                # Use cubic spline interpolation
+                f = interpolate.interp1d(x, palette_row[:, c], kind='cubic',
+                                         fill_value='extrapolate')
+                interpolated = f(xi)
+                # Clip to valid range and convert to uint8
+                lut[:, c] = np.clip(interpolated, 0, 255).astype(np.uint8)
+
+        elif filter_type == "gaussian":
+            # Gaussian filtering: applies smoothing before interpolation
+            # Helps reduce noise/banding in the palette
+            x = np.linspace(0, pw - 1, num=pw)
+            xi = np.linspace(0, pw - 1, num=256)
+
+            # Calculate sigma based on palette width (adjustable)
+            # Smaller sigma = less smoothing, larger sigma = more smoothing
+            sigma = max(1.0, pw / 64)  # Adjust divisor for desired smoothing
+
+            lut = np.zeros((256, 3), dtype=np.uint8)
+            for c in range(3):
+                # Reshape to 2D for GaussianBlur (height=1, width=pw)
+                channel_2d = palette_row[:, c].reshape(1, -1).astype(np.float32)
+
+                # Apply Gaussian filter (kernel size automatically calculated from sigma)
+                smoothed = cv2.GaussianBlur(channel_2d, (0, 0), sigmaX=sigma)
+
+                # Linear interpolation on smoothed data
+                lut[:, c] = np.interp(xi, x, smoothed.flatten()).astype(np.uint8)
+
+        elif filter_type == "cubic_gaussian":
+            # Combined approach: Gaussian smoothing followed by cubic interpolation
+            x = np.linspace(0, pw - 1, num=pw)
+            xi = np.linspace(0, pw - 1, num=256)
+
+            sigma = max(0.5, pw / 128)  # Lighter smoothing for cubic combo
+
+            lut = np.zeros((256, 3), dtype=np.uint8)
+            for c in range(3):
+                # Apply light Gaussian smoothing
+                channel_2d = palette_row[:, c].reshape(1, -1).astype(np.float32)
+                smoothed = cv2.GaussianBlur(channel_2d, (0, 0), sigmaX=sigma)
+
+                # Cubic interpolation on smoothed data
+                f = interpolate.interp1d(x, smoothed.flatten(), kind='cubic',
+                                         fill_value='extrapolate')
+                interpolated = f(xi)
+                lut[:, c] = np.clip(interpolated, 0, 255).astype(np.uint8)
+
+        else:
+            # Default to linear if unknown filter type
+            x = np.linspace(0, pw - 1, num=pw)
+            xi = np.linspace(0, pw - 1, num=256)
+            lut = np.stack([
+                np.interp(xi, x, palette_row[:, c]).astype(np.uint8) for c in range(3)
+            ], axis=1)
 
     # Extract greyscale channel and optional alpha
     alpha = None

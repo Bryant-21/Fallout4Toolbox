@@ -12,8 +12,8 @@ from qfluentwidgets import (
     FluentIcon as FIF,
 )
 
-from help.mip_help import MipHelp
-from settings.basic_settings import BasicSettings
+from src.help.mip_help import MipHelp
+from src.settings.basic_settings import BasicSettings
 from src.utils.appconfig import cfg
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons

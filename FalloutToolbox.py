@@ -63,11 +63,13 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         from src.widgets.bulk_nif_edit import UVPaddingRemoverWidget
         from src.widgets.nif_edit import SingleModelUVPadWidget
         from src.widgets.palette_applier import PaletteApplier
-        from src.widgets.add_to_palette import AddToPaletteWidget
+        from src.widgets.palette_adder import AddToPaletteWidget
+        from src.widgets.palette_adjuster import PaletteAdjuster
+        from src.widgets.bulk_palette_generator import BulkPaletteGeneratorWidget
 
         self.addSubInterface(DDSResizerWindow(self, "DDS Bulk Resizer"), CustomIcons.BULK.icon(), "DDS Bulk Resizer",
                              NavigationItemPosition.TOP)
-        self.addSubInterface(DDSInspector(self, "DDS Inspector"), CustomIcons.REPORT.icon() if hasattr(CustomIcons, 'REPORT') else FIF.INFO,
+        self.addSubInterface(DDSInspector(self, "DDS Inspector"), CustomIcons.IMAGE_VIEWER.icon(),
                              "DDS Inspector", NavigationItemPosition.TOP)
         self.addSubInterface(ESPTemplaterWidget(self, "ESP Template Mod Maker"), CustomIcons.PUZZLE.icon(),
                              "ESP Template Mod Maker",
@@ -83,10 +85,14 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         self.navigationInterface.addSeparator()
         self.addSubInterface(PaletteLUTGenerator(self, "Palette Generator"), CustomIcons.PALETTE.icon(),
                              "Palette Generator", NavigationItemPosition.TOP)
-        self.addSubInterface(PaletteApplier(self, "Palette Preview"), FIF.SEARCH,
+        self.addSubInterface(BulkPaletteGeneratorWidget(self, "Bulk Palette Generator"), CustomIcons.BULK_EDIT.icon(),
+                             "Bulk Palette Generator", NavigationItemPosition.TOP)
+        self.addSubInterface(PaletteApplier(self, "Palette Preview"), CustomIcons.PREVIEW_FILE.icon(),
                              "Palette Preview", NavigationItemPosition.TOP)
-        self.addSubInterface(AddToPaletteWidget(self, "Add To Palette"), CustomIcons.ADD_SOLID.icon(),
+        self.addSubInterface(AddToPaletteWidget(self, "Add To Palette"), CustomIcons.IMAGE_CIRCLE.icon(stroke=True),
                              "Add To Palette", NavigationItemPosition.TOP)
+        self.addSubInterface(PaletteAdjuster(self, "Palette Adjuster"), CustomIcons.COLORS_SQUARE.icon(stroke=True),
+                             "Palette Adjuster", NavigationItemPosition.TOP)
         self.navigationInterface.addSeparator()
         self.addSubInterface(ImageQuantizerWidget(self, "Image Quantizer"), CustomIcons.QUANT.icon(), "Image Quantizer",
                              NavigationItemPosition.TOP)
