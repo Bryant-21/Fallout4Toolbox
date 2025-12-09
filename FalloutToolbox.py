@@ -18,8 +18,7 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
 
     def __init__(self):
         super().__init__()
-        self.icon_path = "resource/icon.ico"
-        self.icon = QIcon(self.icon_path)
+
         self.setupWindow()
         self.ring = IndeterminateProgressRing(self)
         self.ring.hide()
@@ -83,7 +82,7 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         self.addSubInterface(ArchlistWidget(self, "Archlist Creator"), FIF.PENCIL_INK, "Archlist Creator",
                              NavigationItemPosition.TOP)
         self.navigationInterface.addSeparator()
-        self.addSubInterface(PaletteLUTGenerator(self, "Palette Generator"), CustomIcons.PALETTE.icon(),
+        self.addSubInterface(PaletteLUTGenerator(self, "Palette Generator"), CustomIcons.PALETTE_2.icon(stroke=True),
                              "Palette Generator", NavigationItemPosition.TOP)
         self.addSubInterface(BulkPaletteGeneratorWidget(self, "Bulk Palette Generator"), CustomIcons.BULK_EDIT.icon(),
                              "Bulk Palette Generator", NavigationItemPosition.TOP)
@@ -112,6 +111,8 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
 
         self.addSubInterface(MainSettings(self), FIF.SETTING, 'Settings', NavigationItemPosition.BOTTOM)
 
+        self.splashScreen.finish()
+
 
     def show_progress(self):
         self.setEnabled(False)
@@ -131,7 +132,6 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
 
     def setupWindow(self):
         self.setWindowTitle(f'Fallout Tools - {VERSION}')
-        self.setWindowIcon(self.icon)
 
         screen = self.window().screen()
         desktop = screen.availableGeometry()

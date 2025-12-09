@@ -4,10 +4,8 @@ import traceback
 from typing import Iterable
 
 from PySide6 import QtWidgets
-from PySide6.QtWidgets import (
-    QFileDialog, QMessageBox
-)
-from qfluentwidgets import FluentIcon as FIF
+from PySide6.QtWidgets import QFileDialog
+from qfluentwidgets import FluentIcon as FIF, InfoBar
 from qfluentwidgets import PrimaryPushButton, PushSettingCard, SwitchSettingCard
 
 from src.help.matfiles_help import MatfilesHelp
@@ -491,19 +489,40 @@ class MaterialToolUI(BaseWidget):
 
         # Validation
         if not input_dir or not os.path.isdir(input_dir):
-            QMessageBox.warning(self, "Validation", "Please select a valid input directory.")
-            return
-        if not folders_raw:
-            QMessageBox.warning(self, "Validation", "Please enter at least one folder name (comma-separated).")
-            return
-        if not include_bgsm and not include_bgem:
-            QMessageBox.warning(self, "Validation", "Please select at least one of: Include BGSM or Include BGEM.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please select a valid input directory."),
+                duration=3000,
+                parent=self,
+            )
             return
 
-        folders = [f.strip() for f in folders_raw.split(',') if f.strip()]
-        if not folders:
-            QMessageBox.warning(self, "Validation", "No valid folder names were provided.")
+        if not folders_raw:
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please enter at least one folder name (comma-separated)."),
+                duration=3000,
+                parent=self,
+            )
             return
+        if not include_bgsm and not include_bgem:
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please select at least one of: Include BGSM or Include BGEM."),
+                duration=3000,
+                parent=self,
+            )
+            return
+
+            folders = [f.strip() for f in folders_raw.split(',') if f.strip()]
+            if not folders:
+                InfoBar.warning(
+                    title=self.tr("Validation"),
+                    content=self.tr("No valid folder names were provided."),
+                    duration=3000,
+                    parent=self,
+                )
+                return
 
         # Collect selected texture fields from SwitchSettingCards (persistent ConfigItems)
         selected_paths = set()
@@ -534,6 +553,11 @@ class MaterialToolUI(BaseWidget):
         except Exception as ex:
             tb = traceback.format_exc()
             logger.debug(f"Error: {ex}\n{tb}")
-            QMessageBox.critical(self, "Error", f"An error occurred:\n{ex}")
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"An error occurred:\n{ex}"),
+                duration=5000,
+                parent=self,
+            )
         finally:
             self.run_button.setEnabled(True)

@@ -6,7 +6,7 @@ from typing import Optional
 from PIL import Image
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QWidget, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QWidget, QFileDialog
 from qfluentwidgets import (
     PushSettingCard,
     PrimaryPushButton,
@@ -281,7 +281,12 @@ class UVPaddingRemoverWidget(BaseWidget):
         textures_dir = cfg.textures_dir_cfg.value
         data_root = cfg.data_root_cfg.value
         if not textures_dir or not data_root:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("Please set Data root and a Textures folder."))
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Please set Data root and a Textures folder."),
+                duration=3000,
+                parent=self,
+            )
             return
         # pick a texture file
         file_path, _ = QFileDialog.getOpenFileName(self, self.tr("Pick a texture image"), textures_dir, self.tr("Image files (*.png *.jpg *.jpeg *.bmp *.tga *.dds)"))
@@ -311,7 +316,12 @@ class UVPaddingRemoverWidget(BaseWidget):
         except Exception as e:
             traceback.print_exc()
             logger.error(f"Preview failed: {e}")
-            QMessageBox.critical(self, self.tr("Error"), self.tr(f"Preview failed: {e}"))
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Preview failed: {e}"),
+                duration=5000,
+                parent=self,
+            )
         finally:
             p = getattr(self, 'parent', None)
             if p and hasattr(p, 'complete_loader'):
@@ -325,7 +335,12 @@ class UVPaddingRemoverWidget(BaseWidget):
         data_root = cfg.data_root_cfg.value
         out_dir = cfg.output_dir_cfg.value or None
         if not textures_dir or not data_root:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("Please set Data root and a Textures folder."))
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Please set Data root and a Textures folder."),
+                duration=3000,
+                parent=self,
+            )
             return
         # Disable UI and show progress mask
         try:

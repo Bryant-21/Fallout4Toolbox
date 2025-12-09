@@ -8,6 +8,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     SwitchSettingCard,
     ConfigItem,
+    InfoBar,
 )
 
 from src.help.subgraph_help import SubgraphHelp
@@ -377,19 +378,44 @@ class SubGraphMakerWindow(BaseWidget):
 
         # Validate
         if not races:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please select at least one race to process.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please select at least one race to process."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not target_anim:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please enter Target Animation Keyword.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please enter Target Animation Keyword."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not new_anim:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please enter New Keyword Animation.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please enter New Keyword Animation."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not target_folder:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please enter Target Folder.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please enter Target Folder."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not new_folder:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please enter New Folder.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please enter New Folder."),
+                duration=3000,
+                parent=self,
+            )
             return
 
         p = getattr(self, 'parent', None)

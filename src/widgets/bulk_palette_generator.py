@@ -4,14 +4,15 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image
-from PySide6.QtCore import Qt, QThread, Signal
 from PySide6 import QtWidgets
+from PySide6.QtCore import QThread, Signal
 from qfluentwidgets import (
     PushSettingCard,
     PrimaryPushButton,
     ConfigItem,
     FluentIcon as FIF,
     SwitchSettingCard,
+    InfoBar,
 )
 
 from src.help.bulkpalette_help import BulkPaletteHelp
@@ -22,7 +23,11 @@ from src.utils.dds_utils import load_image, save_image
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
-from src.utils.palette_utils import quantize_image, get_palette, apply_palette_to_greyscale
+from src.utils.palette_utils import (
+    auto_create_islands_from_rgba,
+    build_grayscale_and_palette_from_islands,
+    save_islands_npz,
+)
 
 
 class BulkPaletteWorker(QThread):
@@ -127,35 +132,30 @@ class BulkPaletteWorker(QThread):
 
             rgba = np.array(img, dtype=np.uint8)
 
-            # --- 1) Build greyscale atlas by luminance (0-255) ---
-            lum = self._compute_luminance(rgba)
-            grey_img = Image.fromarray(lum, mode="L")
+            palette_size = int(cfg.get(cfg.ci_default_palette_size))
+            palette_height = int(cfg.get(cfg.ci_palette_row_height))
 
-            # --- 2) Quantize to palette using shared palette_utils ---
-            quant_method = cfg.get(cfg.ci_default_quant_method)
-            q_img = quantize_image(img.convert("RGB"), quant_method)
-            palette = get_palette(q_img)
+            # Auto-create islands (headless) and then generate grayscale + palette matching palette_creator.generate_both
+            islands, mask_stack, _overflow = auto_create_islands_from_rgba(rgba, palette_size)
 
-            if palette.size == 0:
-                return False, "Quantization produced empty palette"
+            grayscale_np, palette_img, mask_stack_out = build_grayscale_and_palette_from_islands(
+                rgba,
+                islands,
+                mask_stack,
+                palette_size,
+                palette_height,
+            )
 
-            row_height = int(cfg.get(cfg.ci_palette_row_height))
-            width = palette.shape[0]
-            # Build palette texture: row_height copies of the palette row
-            row = palette.astype(np.uint8)
-            row_img = np.tile(row[np.newaxis, :, :], (row_height, 1, 1))
-            palette_img = Image.fromarray(row_img, mode="RGB")
+            grey_img = Image.fromarray(grayscale_np, mode="L")
 
-            # --- 3) Apply palette back onto greyscale as a preview ---
-            applied_img = apply_palette_to_greyscale(palette_img, grey_img)
-
-            # --- 4) Save all outputs via DDS utilities ---
             save_image(grey_img, grey_path)
-            save_image(palette_img, palette_path)
-            save_image(applied_img, applied_path)
+            save_image(palette_img, palette_path, True)
+
+            # Save NPZ state like palette_creator auto-save
+            save_islands_npz(path, islands, mask_stack_out, rgba.shape[1], rgba.shape[0])
 
             return True, None
-
+        
         except Exception as e:
             logger.exception("Bulk palette generation failed for %s", path)
             return False, str(e)
@@ -323,11 +323,21 @@ class BulkPaletteGeneratorWidget(BaseWidget):
         out = (self.out_cfg.value or "").strip()
 
         if not src:
-            QtWidgets.QMessageBox.warning(self, self.tr("Missing source"), self.tr("Please choose a source folder."))
+            InfoBar.warning(
+                title=self.tr("Missing source"),
+                content=self.tr("Please choose a source folder."),
+                duration=3000,
+                parent=self,
+            )
             return
 
         if not os.path.isdir(src):
-            QtWidgets.QMessageBox.warning(self, self.tr("Invalid source"), self.tr("Source folder does not exist."))
+            InfoBar.warning(
+                title=self.tr("Invalid source"),
+                content=self.tr("Source folder does not exist."),
+                duration=3000,
+                parent=self,
+            )
             return
 
         # Parse patterns
@@ -377,12 +387,13 @@ class BulkPaletteGeneratorWidget(BaseWidget):
         self._set_running(False)
         self._worker = None
 
-        QtWidgets.QMessageBox.information(
-            self,
-            self.tr("Bulk Palette Generator"),
-            self.tr(
+        InfoBar.info(
+            title=self.tr("Bulk Palette Generator"),
+            content=self.tr(
                 "Finished. Processed: {0}, Skipped: {1}, Failed: {2}".format(
                     processed, skipped, failed
                 )
             ),
+            duration=4000,
+            parent=self,
         )

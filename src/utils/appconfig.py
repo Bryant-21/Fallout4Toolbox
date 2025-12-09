@@ -1,7 +1,7 @@
 import os
 from enum import Enum
 
-from qfluentwidgets import ConfigItem, QConfig, FolderValidator, qconfig, ConfigValidator, RangeValidator, \
+from qfluentwidgets import ConfigItem, QConfig, qconfig, ConfigValidator, RangeValidator, \
     RangeConfigItem, BoolValidator, EnumSerializer, OptionsValidator, OptionsConfigItem, ColorConfigItem
 
 from src.utils.filesystem_utils import get_app_root
@@ -67,6 +67,8 @@ class Config(QConfig):
                                                      serializer=EnumSerializer(QuantAlgorithm))
     ci_default_palette_size = OptionsConfigItem("palette", "default_palette_size", 128,
                                                  OptionsValidator([256, 128, 64, 32]))
+    ci_default_quant_size = OptionsConfigItem("palette", "default_quant_size", 128,
+                                                 OptionsValidator([256, 192, 128, 96, 64, 32]))
     ci_default_working_res = OptionsConfigItem("palette", "default_working_resolution",
                                                     default=ResType.Original,
                                                     validator=OptionsValidator(ResType),
@@ -109,6 +111,43 @@ class Config(QConfig):
     # Palette filtering type: "linear" interpolates colors smoothly, "nearest" preserves exact colors
     ci_palette_filter_type = OptionsConfigItem("palette", "palette_filter_type", "linear",
                                                 OptionsValidator(["linear", "nearest", "cubic", "gaussian", "cubic_gaussian"]))
+
+    # Semi-transparent handling modes
+    ci_semi_transparent_mode = OptionsConfigItem(
+        "palette",
+        "semi_transparent_mode",
+        "mask",
+        OptionsValidator(["mask", "nearest_fill", "premultiply_snap"])
+    )
+
+    # Greyscale mapping strategy
+    ci_greyscale_mapping_strategy = OptionsConfigItem(
+        "palette", "greyscale_mapping_strategy", "luminosity",
+        OptionsValidator([
+            "luminosity",  # Default: brightness-based linear mapping
+            "guard_bands_quantile",  # Hybrid: guard bands + quantile distribution
+            "quantile",  # Quantile-based distribution only
+            "guard_bands",  # Simple guard bands with luminosity
+            "nearest_neighbor_reserve",  # Reserve first/last indices, fill with nearest neighbor
+            "color_clustering",  # Hue-based color clustering
+            "perceptual",  # CIE Lab L* perceptual brightness
+            "reverse_luminosity",  # Inverted brightness mapping
+            "alternating_luminosity"  # Alternating direction per island
+        ]))
+    
+    # Guard band width for boundary protection (0-2)
+    ci_guard_band_width = RangeConfigItem("palette", "guard_band_width", 1, RangeValidator(0, 2))
+    
+    # Palette smoothing to reduce harsh color transitions (helps with in-game interpolation artifacts)
+    ci_palette_smooth_method = OptionsConfigItem(
+        "palette", "palette_smooth_method", "none",
+        OptionsValidator([
+            "none",  # No smoothing (default)
+            "gaussian",  # Gaussian blur: smooth based on spatial proximity
+            "median",  # Median filter: preserves edges better while smoothing
+            "bilateral"  # Bilateral: edge-preserving smoothing (best quality, slower)
+        ]))
+    ci_palette_smooth_strength = RangeConfigItem("palette", "palette_smooth_strength", 0.3, RangeValidator(0.0, 1.0))
 
     #theme
     themeColor = ColorConfigItem("QFluentWidgets", "ThemeColor", '#ffa11d', restart=True)

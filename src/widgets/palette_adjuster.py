@@ -8,17 +8,18 @@ from PIL import Image
 from PySide6.QtCore import Qt, QRect
 from PySide6.QtGui import QImage, QPainter, QPixmap, QColor, QMouseEvent
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog, QSplitter,
-    QCheckBox, QColorDialog, QMessageBox
+	QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog, QSplitter,
+	QCheckBox, QColorDialog
 )
 from qfluentwidgets import (
-    PushSettingCard, PrimaryPushButton, PushButton, FluentIcon as FIF,
-    RangeSettingCard, RangeConfigItem, RangeValidator
+	PushSettingCard, PrimaryPushButton, PushButton, FluentIcon as FIF,
+	RangeSettingCard, RangeConfigItem, RangeValidator, InfoBar
 )
 
 from src.settings.palette_settings import PaletteSettings
 from src.utils.appconfig import cfg
 from src.utils.dds_utils import load_image, save_image
+from src.utils.filesystem_utils import get_app_root
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
@@ -95,6 +96,12 @@ class PaletteAdjustCanvas(QLabel):
 
     def _update_pixmap(self, src_array: np.ndarray):
         h, w, c = src_array.shape
+        # Ensure selection mask matches current image size to avoid boolean
+        # indexing errors when preview dimensions change (e.g. tiled row view).
+        if self._selection_mask is not None and self._selection_mask.shape != (h, w):
+            self._selection_mask = np.zeros((h, w), dtype=bool)
+            self._selection_rect = None
+
         if c == 3:
             fmt = QImage.Format.Format_RGB888
         else:
@@ -207,7 +214,7 @@ class PaletteAdjuster(BaseWidget):
         # Top file pickers
         self.palette_card = PushSettingCard(
             self.tr("Palette Texture"),
-            CustomIcons.PALETTE.icon(),
+            CustomIcons.PALETTE_2.icon(stroke=True),
             self.tr("Select an existing palette image"),
             self.tr("No palette selected"),
         )
@@ -373,6 +380,9 @@ class PaletteAdjuster(BaseWidget):
         splitter.setSizes([900, 420])
         self.addToFrame(splitter)
 
+        # Ensure a default greyscale is available for preview if user doesn't pick one
+        self._ensure_default_greyscale_loaded()
+
         self._update_color_buttons()
 
     # ---------- File pickers ----------
@@ -409,6 +419,25 @@ class PaletteAdjuster(BaseWidget):
         except Exception as e:
             logger.exception("Failed to open greyscale image: %s", e)
             self.greyscale_card.setContent(self.tr("Failed to open greyscale"))
+            
+    def _ensure_default_greyscale_loaded(self):
+        """Load the built-in grayscale_4k_cutout as a fallback greyscale preview.
+
+        If the user hasn't selected their own greyscale texture, this image is used
+        so that the preview area always shows a meaningful result.
+        """
+        if self.greyscale_img is not None:
+            return
+        try:
+            default_grey_path = os.path.normpath(os.path.join(get_app_root(), 'resource', 'grayscale_4k_cutout.png'))
+            if os.path.isfile(default_grey_path):
+                img_g = load_image(default_grey_path, f='L')
+                self.greyscale_img = img_g
+                logger.info("Loaded default greyscale image for palette adjuster: %s", default_grey_path)
+            else:
+                logger.warning("Default greyscale for palette adjuster not found at: %s", default_grey_path)
+        except Exception as e:
+            logger.exception("Failed to load default greyscale image for palette adjuster: %s", e)
 
     # ---------- Selection ----------
     def on_row_card_changed(self, val: int):
@@ -457,8 +486,14 @@ class PaletteAdjuster(BaseWidget):
             return None
         if cv2 is None:
             if not preview_only:
-                QMessageBox.warning(self, self.tr("Missing Dependency"), self.tr("OpenCV is not available; HSV adjustments are disabled."))
+                InfoBar.warning(
+                    title=self.tr("Missing Dependency"),
+                    content=self.tr("OpenCV is not available; HSV adjustments are disabled."),
+                    duration=3000,
+                    parent=self,
+                )
             return None
+
         palette_mask = self._build_palette_mask_from_canvas_selection() if self.apply_selection_only.isChecked() else None
         if not self.apply_selection_only.isChecked():
             palette_mask = np.ones(src.shape[:2], dtype=bool)
@@ -501,7 +536,12 @@ class PaletteAdjuster(BaseWidget):
         except Exception:
             logger.exception("Failed to apply adjustments")
             if not preview_only:
-                QMessageBox.warning(self, self.tr("Adjustment Failed"), self.tr("Could not apply adjustments."))
+                InfoBar.warning(
+                    title=self.tr("Adjustment Failed"),
+                    content=self.tr("Could not apply adjustments."),
+                    duration=3000,
+                    parent=self,
+                )
             return None
 
     # ---------- Gradient / Fill ----------
@@ -623,23 +663,55 @@ class PaletteAdjuster(BaseWidget):
             self._set_row_range_and_value(max(1, self.palette_array.shape[0]), sel_row)
             self._refresh_canvas_row_view()
             self.update_preview()
-            QMessageBox.information(self, self.tr("Palette Updated"), self.tr("Row appended and palette reloaded."))
+            InfoBar.success(
+                title=self.tr("Palette Updated"),
+                content=self.tr("Row appended and palette reloaded."),
+                duration=3000,
+                parent=self,
+            )
         except Exception:
             logger.exception("Failed to append row")
-            QMessageBox.warning(self, self.tr("Append Failed"), self.tr("Unable to append row."))
+            InfoBar.warning(
+                title=self.tr("Append Failed"),
+                content=self.tr("Unable to append row."),
+                duration=3000,
+                parent=self,
+            )
 
     # ---------- Preview ----------
     def update_preview(self, preview_palette: Optional[np.ndarray] = None):
+        """Update the greyscale preview using the current palette row.
+
+        If the user has not selected a greyscale image, a built-in
+        grayscale_4k_cutout is used as a fallback so the preview is
+        never empty once a palette is loaded.
+        """
+        # We need some palette data to work with
         if self.palette_img is None and preview_palette is None:
             return
+
+        # Ensure we have some greyscale source (user-selected or default)
+        self._ensure_default_greyscale_loaded()
+        if self.greyscale_img is None:
+            # Nothing to preview against
+            return
+
         try:
             palette_img = self.palette_img
             if preview_palette is not None:
-                palette_img = Image.fromarray(preview_palette[:, :, :3], mode="RGB")
+                # Respect alpha if present, but palette rows only use RGB
+                mode = "RGBA" if preview_palette.shape[2] == 4 else "RGB"
+                palette_img = Image.fromarray(preview_palette[:, :, :3], mode=mode)
 
-            row_slice = self._extract_row_slice(np.array(palette_img))
-            display = self._build_row_display_from_array(row_slice)
-            self._set_preview(self.preview_img_label, display)
+            # Determine which palette row to sample (1-based UI -> 0-based index)
+            h = palette_img.size[1]
+            sel_row = self._get_row_value(max_row=h)
+            row_y = max(0, min(h - 1, sel_row - 1))
+            palette_row = get_palette_row(palette_img, y=row_y)
+
+            colored = apply_palette_to_greyscale(palette_img, self.greyscale_img, palette_row)
+            arr = np.array(colored.convert("RGBA"), dtype=np.uint8)
+            self._set_preview(self.preview_img_label, arr)
         except Exception:
             logger.exception("Failed to update preview")
 
@@ -652,7 +724,14 @@ class PaletteAdjuster(BaseWidget):
         else:
             fmt = QImage.Format.Format_RGBA8888
         qimg = QImage(arr.data, arr.shape[1], arr.shape[0], arr.strides[0], fmt)
-        label.setPixmap(QPixmap.fromImage(qimg))
+
+        # Fit greyscale preview into the label while keeping aspect ratio,
+        # similar to PaletteApplier so it doesn't appear overly zoomed.
+        pix = QPixmap.fromImage(qimg)
+        target_w = max(1, label.width())
+        target_h = max(1, label.height())
+        pix = pix.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        label.setPixmap(pix)
 
     # ---------- Row view helpers ----------
     def _refresh_canvas_row_view(self):
@@ -706,7 +785,6 @@ class PaletteAdjuster(BaseWidget):
     def _set_row_range_and_value(self, max_row: int, value: int):
         max_row = max(1, max_row)
         self.row_card.slider.setRange(1, max_row)
-        self.row_cfg.range = (1, max_row)
         self._updating_row_card = True
         self.row_card.setValue(max(1, min(max_row, value)))
         self._updating_row_card = False

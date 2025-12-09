@@ -3,13 +3,14 @@ from typing import Optional, Tuple, List
 
 from PIL import Image
 from PySide6.QtCore import QThread, Signal, Qt
-from PySide6.QtWidgets import QFileDialog, QWidget, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QWidget
 from qfluentwidgets import (
     PushSettingCard,
     PrimaryPushButton,
     PushButton,
     SwitchSettingCard,
     FluentIcon as FIF,
+    InfoBar,
 )
 
 from src.help.upscaler_help import UpscalerHelp
@@ -226,7 +227,12 @@ class UpscaleWidget(BaseWidget):
     def _on_preview(self):
         folder = self.folder_card.contentLabel.text()
         if not folder:
-            QMessageBox.warning(self, "Validation", "Please select a folder first.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please select a folder first."),
+                duration=3000,
+                parent=self,
+            )
             return
         file, _ = QFileDialog.getOpenFileName(self, self.tr("Choose a texture"), folder,
                                               "Images (*.png *.jpg *.jpeg *.dds)")
@@ -237,7 +243,12 @@ class UpscaleWidget(BaseWidget):
             pil = load_image(file)
             self._set_preview_image(pil, upscaled=False)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load image: {e}")
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Failed to load image: {e}"),
+                duration=5000,
+                parent=self,
+            )
             return
         # Run worker just for this file
         self.worker = UpscaleWorker(folder, output_dir=None, preview_only=file, include_subdirs=self._include_subdirs)
@@ -253,7 +264,12 @@ class UpscaleWidget(BaseWidget):
     def _on_process(self):
         folder = self.folder_card.contentLabel.text()
         if not folder:
-            QMessageBox.warning(self, "Validation", "Please select a folder first.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please select a folder first."),
+                duration=3000,
+                parent=self,
+            )
             return
         out_dir = self.output_card.contentLabel.text() or None
         self.worker = UpscaleWorker(folder, output_dir=out_dir, include_subdirs=self._include_subdirs)
@@ -295,13 +311,23 @@ class UpscaleWidget(BaseWidget):
         self.btn_preview.setEnabled(True)
         p = self.parent
         if p and hasattr(p, 'complete_loader'): p.complete_loader()
-        QMessageBox.information(self, "Done", f"Saved: {saved}\nSkipped: {skipped}\nFailed: {failed}")
+        InfoBar.success(
+            title=self.tr("Done"),
+            content=self.tr(f"Saved: {saved}\nSkipped: {skipped}\nFailed: {failed}"),
+            duration=4000,
+            parent=self,
+        )
 
     def _on_error(self, message: str):
         self.btn_process.setEnabled(True)
         self.btn_preview.setEnabled(True)
         p = self.parent
         if p and hasattr(p, 'complete_loader'): p.complete_loader()
-        QMessageBox.critical(self, "Error", message)
+        InfoBar.error(
+            title=self.tr("Error"),
+            content=self.tr(message),
+            duration=5000,
+            parent=self,
+        )
 
 

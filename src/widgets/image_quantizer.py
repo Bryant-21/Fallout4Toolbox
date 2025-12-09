@@ -4,10 +4,9 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
-    QWidget, QFileDialog, QMessageBox, QVBoxLayout
+    QWidget, QFileDialog, QVBoxLayout
 )
 from qfluentwidgets import (
     PushSettingCard,
@@ -52,11 +51,11 @@ class ImageQuantizerWidget(BaseWidget):
         )
 
         self.palette_size_card = RadioSettingCard(
-            cfg.ci_default_palette_size,
+            cfg.ci_default_quant_size,
             CustomIcons.WIDTH.icon(),
             self.tr("Colors"),
             self.tr("Number of colors to quantize to"),
-            texts=["256", "128", "64", "32", "16", "8"],
+            texts=["256", "192", "128", "96", "64", "32"],
             parent=self
         )
 
@@ -165,11 +164,21 @@ class ImageQuantizerWidget(BaseWidget):
             self.preview_pane.right_canvas.set_image(None, placeholder=self.tr("Quantized preview"))
         except Exception as e:
             logger.error(f"Failed to load image: {e}")
-            QMessageBox.critical(self, self.tr("Error"), self.tr(f"Failed to load image: {e}"))
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Failed to load image: {e}"),
+                duration=5000,
+                parent=self,
+            )
 
     def _on_quantize(self):
         if not self.original_pil:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("Please select an image first."))
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Please select an image first."),
+                duration=3000,
+                parent=self,
+            )
             return
         # Use method from cfg
         method = cfg.get(cfg.ci_default_quant_method).value if hasattr(cfg.get(cfg.ci_default_quant_method), 'value') else cfg.get(cfg.ci_default_quant_method)
@@ -209,7 +218,12 @@ class ImageQuantizerWidget(BaseWidget):
         except Exception as e:
             traceback.print_exc()
             logger.error(f"Quantization failed: {e}")
-            QMessageBox.critical(self, self.tr("Error"), self.tr(f"Quantization failed: {e}"))
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Quantization failed: {e}"),
+                duration=5000,
+                parent=self,
+            )
         finally:
             p = getattr(self, 'parent', None)
             if p and hasattr(p, 'complete_loader'):
@@ -220,7 +234,12 @@ class ImageQuantizerWidget(BaseWidget):
 
     def _on_save(self):
         if not self.quantized_pil:
-            QMessageBox.information(self, self.tr("Info"), self.tr("No quantized image to save."))
+            InfoBar.info(
+                title=self.tr("Info"),
+                content=self.tr("No quantized image to save."),
+                duration=3000,
+                parent=self,
+            )
             return
         base_dir = os.path.dirname(self.current_image_path) if self.current_image_path else os.path.expanduser("~")
         base_name = os.path.splitext(os.path.basename(self.current_image_path or "image"))[0]
@@ -246,4 +265,9 @@ class ImageQuantizerWidget(BaseWidget):
             )
         except Exception as e:
             logger.error(f"Failed to save image: {e}")
-            QMessageBox.critical(self, self.tr("Error"), self.tr(f"Failed to save image: {e}"))
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Failed to save image: {e}"),
+                duration=5000,
+                parent=self,
+            )

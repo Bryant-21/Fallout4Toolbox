@@ -42,7 +42,7 @@ class PaletteApplier(BaseWidget):
         # Cards
         self.palette_card = PushSettingCard(
             self.tr("Palette Texture"),
-            CustomIcons.PALETTE.icon() if hasattr(CustomIcons, 'PALETTE') else CustomIcons.IMAGE.icon(),
+            CustomIcons.PALETTE_2.icon(stroke=True) if hasattr(CustomIcons, 'PALETTE') else CustomIcons.IMAGE.icon(),
             self.tr("Select Palette Image"),
             self.tr("No palette selected")
         )

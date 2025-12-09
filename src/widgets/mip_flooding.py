@@ -2,8 +2,8 @@ from pathlib import Path
 from typing import Optional, List
 
 from PIL import Image
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import QWidget, QLabel, QFileDialog
+from PySide6.QtCore import QThread, Signal
+from PySide6.QtWidgets import QWidget, QFileDialog
 from mipflooding.wrapper import image_processing as _mip_image_processing
 from qfluentwidgets import (
     PushSettingCard,
@@ -88,7 +88,7 @@ class MipFloodingWidget(BaseWidget):
 
     def _on_worker_info(self, text: str):
         try:
-            self.status_label.setText(self.tr(text))
+            InfoBar.info(self.tr("Processing"), self.tr(text), duration=3000, parent=self)
         except Exception:
             pass
 
@@ -96,7 +96,6 @@ class MipFloodingWidget(BaseWidget):
         try:
             self.btn_process.setEnabled(True)
             InfoBar.success(self.tr("Done"), self.tr(f"Finished. ok={processed}, skipped={skipped}, failed={failed}"), duration=5000, parent=self)
-            self.status_label.setText(self.tr(f"Finished. ok={processed}, skipped={skipped}, failed={failed}"))
         finally:
             p = getattr(self, 'parent', None)
             if p and hasattr(p, 'complete_loader'):
@@ -149,11 +148,6 @@ class MipFloodingWidget(BaseWidget):
 
         # Options: currently processes subfolders by default to simplify configuration
         self._recursive_state = True
-
-        # Status label
-        self.status_label = QLabel(self.tr("Select a folder and click Process"))
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.addToFrame(self.status_label)
 
         # Buttons
         self.btn_process = PrimaryPushButton(icon=FIF.RIGHT_ARROW, text=self.tr("Process Folder"))
@@ -243,7 +237,6 @@ class MipFloodingWidget(BaseWidget):
 
         # Disable UI and show progress mask
         self.btn_process.setEnabled(False)
-        self.status_label.setText(self.tr("Processing..."))
         p = getattr(self, 'parent', None)
         if p and hasattr(p, 'show_progress'):
             try:

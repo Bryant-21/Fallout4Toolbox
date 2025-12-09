@@ -1,5 +1,4 @@
 import json
-import math
 import os
 from pathlib import Path
 
@@ -9,9 +8,9 @@ from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QCursor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QFileDialog,
-                               QListWidget, QMessageBox, QSplitter)
+                               QListWidget, QSplitter)
 from qfluentwidgets import PushSettingCard, PushButton, ScrollArea, PrimaryPushButton, \
-    FluentIcon as FIF, ConfigItem, RangeSettingCard
+    ConfigItem, RangeSettingCard, InfoBar
 from scipy import ndimage
 
 from src.help.palette_help import PaletteHelp
@@ -24,7 +23,12 @@ from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from src.utils.nifutils import build_uv_entries_for_nif, build_mask_from_nif
-from src.utils.palette_utils import quantize_image, apply_palette_to_greyscale
+from src.utils.palette_utils import (
+    quantize_image,
+    auto_create_islands_from_rgba,
+    build_grayscale_and_palette_from_islands,
+    save_islands_npz,
+)
 
 
 class ImageCanvas(QLabel):
@@ -423,9 +427,21 @@ class PaletteLUTGenerator(BaseWidget):
             parent=self
         )
 
+
+        self.quantize_size_card = RadioSettingCard(
+            cfg.ci_default_quant_size,
+            CustomIcons.WIDTH.icon(),
+            self.tr("Quantize Amount"),
+            self.tr("Number of Colors to Quantize image down"),
+            texts=["256", "192", "128", "96", "64", "32"],
+            parent=self
+        )
+
         self.palette_size_card.optionChanged.connect(self.on_palette_size_changed)
+        self.quantize_size_card.optionChanged.connect(self.on_quantize_size_changed)
 
         right_layout.addWidget(self.palette_size_card)
+        right_layout.addWidget(self.quantize_size_card)
         right_layout.addWidget(self.row_card)
 
         self.island_list = QListWidget()
@@ -583,7 +599,12 @@ class PaletteLUTGenerator(BaseWidget):
         if not self.island_edit_locked:
             return True
         msg = self._edit_lock_reason or "Island editing is disabled for this image."
-        QMessageBox.information(self, "Editing Locked", msg)
+        InfoBar.info(
+            title=self.tr("Editing Locked"),
+            content=self.tr(msg),
+            duration=3000,
+            parent=self,
+        )
         return False
 
     def load_image(self):
@@ -633,13 +654,19 @@ class PaletteLUTGenerator(BaseWidget):
                     self._nontransparent_source = True
                     self._set_edit_lock(True, "Loaded image has no transparency; island editing is disabled. Load saved Islands to continue.")
                     self._reset_islands_and_masks()
-                    QMessageBox.information(
-                        self,
-                        "Editing Locked",
-                        "Image has no transparent pixels. Island editing is disabled. Load a saved palette Islands NPZ to use existing islands."
+                    InfoBar.info(
+                        title=self.tr("Editing Locked"),
+                        content=self.tr("Image has no transparent pixels. Island editing is disabled. Load a saved palette Islands NPZ to use existing islands."),
+                        duration=4000,
+                        parent=self,
                     )
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load image: {str(e)}")
+                InfoBar.error(
+                    title=self.tr("Error"),
+                    content=self.tr(f"Failed to load image: {str(e)}"),
+                    duration=5000,
+                    parent=self,
+                )
 
     def _build_island_state(self):
         """Package current island state and masks for serialization."""
@@ -690,13 +717,23 @@ class PaletteLUTGenerator(BaseWidget):
         save (e.g. when called from code) but does not prompt the user.
         """
         if self.canvas.original_image is None or not self.image_path:
-            QMessageBox.warning(self, "Warning", "Load an image and create Islands before saving.")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Load an image and create Islands before saving."),
+                duration=3000,
+                parent=self,
+            )
             return
 
         try:
             metadata, mask_stack = self._build_island_state()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not build Island state: {str(e)}")
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Could not build Island state: {str(e)}"),
+                duration=5000,
+                parent=self,
+            )
             return
 
         try:
@@ -708,9 +745,19 @@ class PaletteLUTGenerator(BaseWidget):
             file_path = os.path.join(npz_dir, f"{base_name}_palette_state.npz")
 
             np.savez_compressed(file_path, metadata=json.dumps(metadata), masks=mask_stack)
-            QMessageBox.information(self, "Saved", f"Islands saved to:\n{file_path}")
+            InfoBar.success(
+                title=self.tr("Saved"),
+                content=self.tr(f"Islands saved to:\n{file_path}"),
+                duration=3000,
+                parent=self,
+            )
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save Islands:\n{str(e)}")
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Failed to save Islands:\n{str(e)}"),
+                duration=5000,
+                parent=self,
+            )
 
     def _auto_save_island_state(self):
         """Automatically persist island state into the app-level npz folder.
@@ -777,23 +824,30 @@ class PaletteLUTGenerator(BaseWidget):
                 raise ValueError("Missing masks")
             mask_stack = mask_stack.astype(bool)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load Islands:\n{str(e)}")
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Failed to load Islands:\n{str(e)}"),
+                duration=5000,
+                parent=self,
+            )
             return
 
         if self.canvas.original_image is None:
-            QMessageBox.warning(
-                self,
-                "Image Required",
-                "Load the original image before loading Islands so sizes match.",
+            InfoBar.warning(
+                title=self.tr("Image Required"),
+                content=self.tr("Load the original image before loading Islands so sizes match."),
+                duration=4000,
+                parent=self,
             )
             return
 
         height, width = self.canvas.original_image.shape[:2]
         if metadata.get("width") != width or metadata.get("height") != height:
-            QMessageBox.critical(
-                self,
-                "Size Mismatch",
-                "Saved Islands were created for a different image size. Load the matching image first.",
+            InfoBar.error(
+                title=self.tr("Size Mismatch"),
+                content=self.tr("Saved Islands were created for a different image size. Load the matching image first."),
+                duration=5000,
+                parent=self,
             )
             return
 
@@ -804,7 +858,12 @@ class PaletteLUTGenerator(BaseWidget):
 
         islands = metadata.get("islands", [])
         if mask_stack.shape[0] != len(islands):
-            QMessageBox.critical(self, "Error", "Mask count does not match saved islands.")
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr("Mask count does not match saved islands."),
+                duration=4000,
+                parent=self,
+            )
             return
 
         for idx, entry in enumerate(islands):
@@ -919,8 +978,12 @@ class PaletteLUTGenerator(BaseWidget):
 
         # Check if there's enough space
         if island_size > available_space:
-            QMessageBox.warning(self, "Warning",
-                                f"Not enough space! Requested: {island_size}, Available: {available_space}")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr(f"Not enough space! Requested: {island_size}, Available: {available_space}"),
+                duration=3000,
+                parent=self,
+            )
             return
 
         # Calculate default gray range based on existing islands
@@ -933,7 +996,12 @@ class PaletteLUTGenerator(BaseWidget):
         gray_end = gray_start + island_size - 1
 
         if gray_end > cfg.get(cfg.ci_default_palette_size) - 1:
-            QMessageBox.warning(self, "Warning", f"Maximum gray value range (0-{cfg.get(cfg.ci_default_palette_size) - 1}) reached!")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr(f"Maximum gray value range (0-{cfg.get(cfg.ci_default_palette_size) - 1}) reached!"),
+                duration=3000,
+                parent=self,
+            )
             return
 
         self.islands.append((island_name, gray_start, gray_end))
@@ -986,14 +1054,24 @@ class PaletteLUTGenerator(BaseWidget):
                 pil_img = Image.open(self.pending_image_path).convert("RGBA")
                 self._base_image_array = np.array(pil_img)
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load pending image: {e}")
+                InfoBar.error(
+                    title=self.tr("Error"),
+                    content=self.tr(f"Failed to load pending image: {e}"),
+                    duration=5000,
+                    parent=self,
+                )
                 return
 
         if self._base_image_array is None:
             return
 
         if not self.model_path:
-            QMessageBox.information(self, "NIF Required", "Select a NIF to derive transparency.")
+            InfoBar.info(
+                title=self.tr("NIF Required"),
+                content=self.tr("Select a NIF to derive transparency."),
+                duration=4000,
+                parent=self,
+            )
             return
 
         h, w = self._base_image_array.shape[:2]
@@ -1008,7 +1086,12 @@ class PaletteLUTGenerator(BaseWidget):
         )
 
         if mask_img is None:
-            QMessageBox.warning(self, "Mask Failed", "Could not build UV mask from the selected NIF.")
+            InfoBar.warning(
+                title=self.tr("Mask Failed"),
+                content=self.tr("Could not build UV mask from the selected NIF."),
+                duration=4000,
+                parent=self,
+            )
             return
 
         mask_arr = np.array(mask_img, dtype=np.uint8)
@@ -1092,6 +1175,47 @@ class PaletteLUTGenerator(BaseWidget):
         self._palette_size_previous = new_size
         self.update_available_space()
 
+    def on_quantize_size_changed(self, config_item: ConfigItem):
+        """Re-quantize the loaded image when quantize size changes and clear islands."""
+        try:
+            new_size = int(config_item.value)
+        except (ValueError, AttributeError):
+            return
+
+        # No image loaded; nothing to update.
+        if self._base_image_array is None:
+            return
+
+        # Try to use the original image path to avoid compounding quantization.
+        source_rgba = None
+        if self.image_path and os.path.exists(self.image_path):
+            try:
+                source_rgba = np.array(Image.open(self.image_path).convert("RGBA"))
+            except Exception:
+                source_rgba = None
+
+        if source_rgba is None:
+            # Fallback to the currently stored base image (already quantized)
+            source_rgba = self._base_image_array.copy()
+
+        alpha_channel = source_rgba[:, :, 3]
+        rgb_array = source_rgba[:, :, :3]
+
+        pil_rgb = Image.fromarray(rgb_array, mode="RGB")
+        self._quantized_image = quantize_image(
+            pil_rgb,
+            cfg.get(cfg.ci_default_quant_method),
+            final_colors=new_size,
+        )
+        self._quantized_image_array = np.array(self._quantized_image.convert("RGB"))
+        base_rgba = np.dstack([self._quantized_image_array, alpha_channel])
+        self._base_image_array = base_rgba
+
+        self.canvas.set_image_array(base_rgba, self._quantized_image, self._quantized_image_array)
+
+        # Changing quantization invalidates existing island selections
+        self._reset_islands_and_masks()
+
     # --- Shared Lab utilities for region similarity ---
     def _lab_image(self, rgb_image: np.ndarray) -> np.ndarray:
         """Convert an RGB image array to Lab (float32)."""
@@ -1167,21 +1291,41 @@ class PaletteLUTGenerator(BaseWidget):
     def magic_wand_select(self):
         """Find regions similar to current island and add them if unassigned."""
         if self.canvas.original_image is None:
-            QMessageBox.warning(self, "Warning", "Please load an image first!")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Please load an image first!"),
+                duration=3000,
+                parent=self,
+            )
             return
 
         if not self.canvas.current_island:
-            QMessageBox.warning(self, "Warning", "Please select an island first!")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Please select an island first!"),
+                duration=3000,
+                parent=self,
+            )
             return
 
         current_island = self.canvas.current_island
         if current_island not in self.canvas.all_masks:
-            QMessageBox.warning(self, "Warning", "Current island has no mask yet!")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Current island has no mask yet!"),
+                duration=3000,
+                parent=self,
+            )
             return
 
         base_mask = self.canvas.all_masks[current_island]
         if not base_mask.any():
-            QMessageBox.warning(self, "Warning", "Current island has no selected pixels to match against.")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Current island has no selected pixels to match against."),
+                duration=3000,
+                parent=self,
+            )
             return
 
         alpha = self.canvas.original_image[:, :, 3]
@@ -1254,25 +1398,50 @@ class PaletteLUTGenerator(BaseWidget):
                     added_pixels += new_pixels
 
         if added_pixels == 0:
-            QMessageBox.information(self, "Magic Wand", "No additional matching regions found.")
+            InfoBar.info(
+                title=self.tr("Magic Wand"),
+                content=self.tr("No additional matching regions found."),
+                duration=3000,
+                parent=self,
+            )
         else:
-            QMessageBox.information(self, "Magic Wand", f"Added {added_pixels} pixels to {current_island}.")
+            InfoBar.success(
+                title=self.tr("Magic Wand"),
+                content=self.tr(f"Added {added_pixels} pixels to {current_island}."),
+                duration=3000,
+                parent=self,
+            )
             self.canvas.update_display()
 
     def add_remaining_to_current(self):
         """Add all unassigned non-transparent pixels to the current island."""
         if self.canvas.original_image is None:
-            QMessageBox.warning(self, "Warning", "Please load an image first!")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Please load an image first!"),
+                duration=3000,
+                parent=self,
+            )
             return
 
         if not self.canvas.current_island:
-            QMessageBox.warning(self, "Warning", "Please select an island first!")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Please select an island first!"),
+                duration=3000,
+                parent=self,
+            )
             return
 
         alpha = self.canvas.original_image[:, :, 3]
         non_transparent = alpha > 0
         if not non_transparent.any():
-            QMessageBox.information(self, "Add Remaining", "Image has no opaque pixels to add.")
+            InfoBar.info(
+                title=self.tr("Add Remaining"),
+                content=self.tr("Image has no opaque pixels to add."),
+                duration=3000,
+                parent=self,
+            )
             return
 
         # Build assigned mask across all islands
@@ -1283,7 +1452,12 @@ class PaletteLUTGenerator(BaseWidget):
 
         remaining = non_transparent & ~assigned_mask
         if not remaining.any():
-            QMessageBox.information(self, "Add Remaining", "No remaining unassigned pixels found.")
+            InfoBar.info(
+                title=self.tr("Add Remaining"),
+                content=self.tr("No remaining unassigned pixels found."),
+                duration=3000,
+                parent=self,
+            )
             return
 
         current_name = self.canvas.current_island
@@ -1296,79 +1470,65 @@ class PaletteLUTGenerator(BaseWidget):
         added_pixels = int(new_pixels_mask.sum())
 
         if added_pixels == 0:
-            QMessageBox.information(self, "Add Remaining", "No remaining unassigned pixels found.")
+            InfoBar.info(
+                title=self.tr("Add Remaining"),
+                content=self.tr("No remaining unassigned pixels found."),
+                duration=3000,
+                parent=self,
+            )
             return
 
         self.canvas.all_masks[current_name] |= new_pixels_mask
-        QMessageBox.information(self, "Add Remaining", f"Added {added_pixels} pixels to {current_name}.")
+        InfoBar.success(
+            title=self.tr("Add Remaining"),
+            content=self.tr(f"Added {added_pixels} pixels to {current_name}."),
+            duration=3000,
+            parent=self,
+        )
         self.canvas.update_display()
 
     def auto_create_islands(self):
         """Automatically detect non-transparent regions and group by color similarity."""
         if self.canvas.original_image is None:
-            QMessageBox.warning(self, "Warning", "Please load an image first!")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Please load an image first!"),
+                duration=3000,
+                parent=self,
+            )
             return
 
-        alpha = self.canvas.original_image[:, :, 3]
-        rgb = self.canvas.original_image[:, :, :3]
-        # Convert once to Lab (perceptual) for grouping comparisons
-        lab_image = self._lab_image(rgb)
-        non_transparent = alpha > 0
-
-        if not non_transparent.any():
-            QMessageBox.warning(self, "Warning", "Image has no opaque pixels.")
+        palette_size = int(cfg.get(cfg.ci_default_palette_size))
+        if palette_size <= 0:
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Palette size must be greater than zero to auto create islands."),
+                duration=3000,
+                parent=self,
+            )
             return
 
-        # Connected components over non-transparent pixels (4-connected)
-        structure = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=int)
-        labels, num = ndimage.label(non_transparent, structure=structure)
-
-        if num == 0:
-            QMessageBox.warning(self, "Warning", "No regions detected.")
+        try:
+            islands, mask_stack, overflow_flag = auto_create_islands_from_rgba(
+                self.canvas.original_image,
+                palette_size,
+            )
+        except ValueError as e:
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr(str(e)),
+                duration=3000,
+                parent=self,
+            )
             return
-
-        # Prepare slices to avoid full-image per-component scans
-        slices = ndimage.find_objects(labels)
-
-        components = []
-        min_pixels = 8  # ignore extremely small specs
-
-        for lbl in range(1, num + 1):
-            sl = slices[lbl - 1]
-            if sl is None:
-                continue
-            lbl_region = labels[sl]
-            region_mask = lbl_region == lbl
-            pixel_count = int(region_mask.sum())
-            if pixel_count < min_pixels:
-                continue
-
-            region_rgb = rgb[sl][region_mask]
-            region_lab = lab_image[sl][region_mask]
-            if region_rgb.size == 0 or region_lab.size == 0:
-                continue
-
-            unique_colors = np.unique(region_rgb.reshape(-1, 3), axis=0)
-
-            # Lab histogram (8x8x8 = 512 bins) captures proportion in perceptual space
-            hist = self._lab_histogram(region_lab)
-
-            mean_lab = region_lab.mean(axis=0)
-
-            # Store local mask to avoid full-image re-labeling later
-            components.append({
-                "slice": sl,
-                "mask": region_mask,
-                "hist": hist,
-                "mean_lab": mean_lab,
-                "pixels": pixel_count,
-                "unique_colors": set(map(tuple, unique_colors.tolist())),
-                # Track regions uniformly so later assignment can iterate safely
-                "regions": [(sl, region_mask)],
-            })
-
-        if not components:
-            QMessageBox.warning(self, "Warning", "No sufficiently large regions found.")
+        except Exception as e:
+            logger.exception("Auto-create islands failed")
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Failed to auto-create islands:\n{str(e)}"),
+                duration=4000,
+                parent=self,
+            )
             return
 
         # Reset existing islands and masks
@@ -1376,187 +1536,30 @@ class PaletteLUTGenerator(BaseWidget):
         self.island_list.clear()
         self.canvas.all_masks.clear()
 
-        # Determine four islands by dividing the palette into quarters
-        desired_islands = 4
-        if cfg.get(cfg.ci_default_palette_size) <= 0:
-            QMessageBox.warning(self, "Warning", "Palette size must be greater than zero to auto create islands.")
-            return
-
-        base_size = cfg.get(cfg.ci_default_palette_size) // desired_islands
-        remainder = cfg.get(cfg.ci_default_palette_size) % desired_islands
-
-        island_specs = []
-        current_start = 0
-        for i in range(desired_islands):
-            size = base_size + (1 if i < remainder else 0)
-            if size <= 0:
-                continue
-            gray_start = current_start
-            gray_end = current_start + size - 1
-            island_specs.append({
-                "gray_start": gray_start,
-                "gray_end": gray_end,
-                "capacity": size
-            })
-            current_start += size
-
-        if not island_specs:
-            QMessageBox.warning(self, "Warning",
-                                "Unable to divide the palette into islands with the current palette size.")
-            return
-
-        # --- Color-first clustering into up to four distinct groups ---
-        hist_weight = 0.75
-
-        def _comp_group_score(comp: dict, ref_hist: np.ndarray, ref_mean: np.ndarray) -> float:
-            """Combined histogram/mean distance with a penalty if dominant bins disagree."""
-            d_hist = self._histogram_intersection_distance(comp["hist"], ref_hist)
-            d_mean = self._mean_lab_distance(comp["mean_lab"], ref_mean)
-            base = hist_weight * d_hist + (1.0 - hist_weight) * d_mean
-            if not self._dominant_bin_guard(comp["hist"], ref_hist):
-                base += 0.25  # discourage mixing different dominant colors
-            return base
-
-        # Seed groups with the largest component, then pick farthest colors to maximize diversity
-        components_sorted = sorted(components, key=lambda c: c["pixels"], reverse=True)
-        seeds: list[dict] = []
-        if components_sorted:
-            seeds.append(components_sorted[0])
-            remaining = components_sorted[1:]
-            while len(seeds) < min(desired_islands, len(components_sorted)) and remaining:
-                far_idx = None
-                far_score = -1.0
-                for idx, cand in enumerate(remaining):
-                    min_dist = min(_comp_group_score(cand, s["hist"], s["mean_lab"]) for s in seeds)
-                    if min_dist > far_score:
-                        far_score = min_dist
-                        far_idx = idx
-                seeds.append(remaining.pop(far_idx))
-
-        # Initialize groups from seeds
-        groups: list[dict] = []
-        for seed in seeds:
-            groups.append({
-                "hist_centroid": seed["hist"],
-                "mean_lab_centroid": seed["mean_lab"],
-                "pixel_total": seed["pixels"],
-                "unique_colors": set(seed["unique_colors"]),
-                "regions": [(sl, m) for sl, m in seed.get("regions", [(seed["slice"], seed["mask"])])]
-            })
-
-        # Assign remaining components to the closest color group
-        for comp in components_sorted:
-            if comp in seeds:
-                continue
-
-            best_idx = None
-            best_score = math.inf
-
-            for idx, grp in enumerate(groups):
-                score = _comp_group_score(comp, grp["hist_centroid"], grp["mean_lab_centroid"])
-                if score < best_score:
-                    best_score = score
-                    best_idx = idx
-
-            if best_idx is None:
-                continue
-
-            grp = groups[best_idx]
-            total_pixels = grp["pixel_total"] + comp["pixels"]
-            grp["hist_centroid"] = (grp["hist_centroid"] * grp["pixel_total"] + comp["hist"] * comp[
-                "pixels"]) / total_pixels
-            grp["mean_lab_centroid"] = (grp["mean_lab_centroid"] * grp["pixel_total"] + comp["mean_lab"] * comp[
-                "pixels"]) / total_pixels
-            grp["pixel_total"] = total_pixels
-            grp["unique_colors"].update(comp["unique_colors"])
-            grp["regions"].extend(comp.get("regions", [(comp["slice"], comp["mask"])]))
-
-        # If we have fewer groups than desired islands, pad with empty groups
-        while len(groups) < desired_islands:
-            groups.append({
-                "hist_centroid": np.zeros(512, dtype=np.float32),
-                "mean_lab_centroid": np.zeros(3, dtype=np.float32),
-                "pixel_total": 0,
-                "unique_colors": set(),
-                "regions": []
-            })
-
-        # Map color groups to island slots by matching largest color needs to largest capacities
-        island_data: list[dict | None] = [None] * len(island_specs)
-        groups_sorted_for_capacity = sorted(enumerate(groups), key=lambda t: len(t[1]["unique_colors"]), reverse=True)
-        specs_sorted_by_capacity = sorted(enumerate(island_specs), key=lambda t: t[1]["capacity"], reverse=True)
-
-        overflow_flag = False
-
-        for (grp_idx, grp), (spec_idx, spec) in zip(groups_sorted_for_capacity, specs_sorted_by_capacity):
-            mask = np.zeros(non_transparent.shape, dtype=bool)
-            for sl, m in grp.get("regions", []):
-                mask[sl][m] = True
-
-            island_data[spec_idx] = {
-                "gray_start": spec["gray_start"],
-                "gray_end": spec["gray_end"],
-                "capacity": spec["capacity"],
-                "unique_colors": set(grp["unique_colors"]),
-                "mask": mask,
-                "pixel_total": grp["pixel_total"],
-            }
-
-            if len(grp["unique_colors"]) > spec["capacity"]:
-                overflow_flag = True
-
-        # Fill any remaining island slots with empty masks
-        for idx, spec in enumerate(island_specs):
-            if island_data[idx] is None:
-                island_data[idx] = {
-                    "gray_start": spec["gray_start"],
-                    "gray_end": spec["gray_end"],
-                    "capacity": spec["capacity"],
-                    "unique_colors": set(),
-                    "mask": np.zeros(non_transparent.shape, dtype=bool),
-                    "pixel_total": 0,
-                }
-
-        # Ensure all non-transparent pixels end up in some island mask
-        combined_mask = np.zeros(non_transparent.shape, dtype=bool)
-        for isl in island_data:
-            combined_mask |= isl["mask"]
-
-        leftovers = non_transparent & ~combined_mask
-        if leftovers.any():
-            # Assign leftovers to the island with the most remaining capacity (tie -> later island)
-            def remaining_capacity(idx: int) -> tuple[int, int]:
-                isl = island_data[idx]
-                rem = isl["capacity"] - len(isl["unique_colors"])
-                return rem, idx
-
-            target_idx = max(range(len(island_data)), key=remaining_capacity)
-            target = island_data[target_idx]
-            target["mask"] |= leftovers
-
-            leftover_colors = set(map(tuple, rgb[leftovers].reshape(-1, 3)))
-            target["unique_colors"].update(leftover_colors)
-            if len(target["unique_colors"]) > target["capacity"]:
-                overflow_flag = True
-
-        # Build final islands and UI list
-        self.islands = []
-        self.island_list.clear()
-
-        for idx, isl in enumerate(island_data, start=1):
-            island_name = f"AutoIsland_{idx}"
-            gray_start, gray_end = isl["gray_start"], isl["gray_end"]
+        # Populate from shared helper output
+        for (island_name, gray_start, gray_end), mask in zip(islands, mask_stack):
             self.islands.append((island_name, gray_start, gray_end))
-            self.canvas.all_masks[island_name] = isl["mask"]
-            self.island_list.addItem(f"{island_name} [{gray_start}-{gray_end}] ({gray_end - gray_start + 1} colors)")
+            self.canvas.all_masks[island_name] = mask.astype(bool, copy=False)
+            self.island_list.addItem(
+                f"{island_name} [{gray_start}-{gray_end}] ({gray_end - gray_start + 1} colors)"
+            )
 
         if not self.islands:
-            QMessageBox.warning(self, "Warning", "Could not allocate any islands within available grayscale range.")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Could not allocate any islands within available grayscale range."),
+                duration=4000,
+                parent=self,
+            )
             return
 
         if overflow_flag:
-            QMessageBox.warning(self, "Warning",
-                                "Some islands exceeded their ideal unique-color capacity; colors were consolidated to fit all pixels.")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Some islands exceeded their ideal unique-color capacity; colors were consolidated to fit all pixels."),
+                duration=5000,
+                parent=self,
+            )
 
         # Select first island and refresh UI
         self.island_list.setCurrentRow(0)
@@ -1569,313 +1572,132 @@ class PaletteLUTGenerator(BaseWidget):
     def generate_both(self):
         """Generate both grayscale atlas and LUT palette"""
         if self.canvas.original_image is None:
-            QMessageBox.warning(self, "Warning", "Please load an image first!")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Please load an image first!"),
+                duration=3000,
+                parent=self,
+            )
             return
 
         if not self.image_path:
-            QMessageBox.warning(self, "Warning", "No image path available!")
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("No image path available!"),
+                duration=3000,
+                parent=self,
+            )
             return
 
         try:
-            # Get base path from original image
             import os
 
             source_is_dds = self.image_path.lower().endswith('.dds')
             output_extension = ".dds" if source_is_dds else ".png"
 
             directory = os.path.dirname(self.image_path)
-            base_path  = os.path.splitext(os.path.basename(self.image_path))[0]
+            base_path = os.path.splitext(os.path.basename(self.image_path))[0]
 
-            grayscale_path = os.path.join(
-                directory, f"{base_path }_grayscale{output_extension}"
-            )
-            palette_path = os.path.join(
-                directory, f"{base_path }_palette{output_extension}"
-            )
-            applied_path = os.path.join(
-                directory, f"{base_path }_applied{output_extension}"
-            )
+            grayscale_path = os.path.join(directory, f"{base_path}_grayscale{output_extension}")
+            palette_path = os.path.join(directory, f"{base_path}_palette{output_extension}")
 
-            # Game interpolates palettes <256 up to 256 entries. Keep the palette width
-            # at the chosen size (typically 128) but scale grayscale indices to 0-255 so
-            # they line up with the interpolated palette the game will use.
-            if cfg.get(cfg.ci_default_palette_size) <= 1:
-                palette_to_game_scale = 1.0
-            else:
-                palette_to_game_scale = 255.0 / float(cfg.get(cfg.ci_default_palette_size) - 1)
+            palette_size = int(cfg.get(cfg.ci_default_palette_size))
+            palette_height = int(cfg.get(cfg.ci_palette_row_height)) if hasattr(cfg, "ci_palette_row_height") else 16
 
-            # Get image dimensions
+            # Prepare islands and masks (preserve user selections)
+            islands = list(self.islands)
             height, width = self.canvas.original_image.shape[:2]
-            alpha_channel = self.canvas.original_image[:, :, 3]
-            non_transparent = alpha_channel > 0
+            non_transparent = self.canvas.original_image[:, :, 3] > 0
 
-            # Build assigned mask across all islands
             assigned_mask = np.zeros((height, width), dtype=bool)
-            for mask in self.canvas.all_masks.values():
+            for name, _, _ in islands:
+                mask = self.canvas.all_masks.get(name)
                 if mask is not None:
                     assigned_mask |= mask
 
-            remaining_pixels = non_transparent & ~assigned_mask
-
-            # Determine remaining palette space
-            used_space = sum(gray_end - gray_start + 1 for _, gray_start, gray_end in self.islands)
-            available_space = cfg.get(cfg.ci_default_palette_size) - used_space
-
+            # Add remaining palette range as an island if space exists
+            used_space = sum(gray_end - gray_start + 1 for _, gray_start, gray_end in islands)
+            available_space = palette_size - used_space
             added_remaining_island = None
 
             if available_space > 0:
-                # Add a real island that spans the remaining palette range
-                gray_start = self.islands[-1][2] + 1 if self.islands else 0
-                gray_end = cfg.get(cfg.ci_default_palette_size) - 1
+                gray_start = islands[-1][2] + 1 if islands else 0
+                gray_end = palette_size - 1
 
-                # Ensure unique island name
-                base_idx = len(self.islands) + 1
-                existing_names = {name for name, _, _ in self.islands}
+                base_idx = len(islands) + 1
+                existing_names = {name for name, _, _ in islands}
                 island_name = f"Island_{base_idx}"
                 while island_name in existing_names:
                     base_idx += 1
                     island_name = f"Island_{base_idx}"
 
+                remaining_pixels = non_transparent & ~assigned_mask
+                new_mask = np.zeros(non_transparent.shape, dtype=bool)
+                if remaining_pixels.any():
+                    new_mask |= remaining_pixels
+
+                islands.append((island_name, gray_start, gray_end))
                 self.islands.append((island_name, gray_start, gray_end))
                 self.island_list.addItem(
                     f"{island_name} [{gray_start}-{gray_end}] ({gray_end - gray_start + 1} colors)")
-                self.canvas.all_masks.setdefault(island_name, np.zeros(non_transparent.shape, dtype=bool))
-                if remaining_pixels.any():
-                    self.canvas.all_masks[island_name] |= remaining_pixels
+                self.canvas.all_masks[island_name] = new_mask
                 added_remaining_island = island_name
                 self.update_available_space()
-            else:
-                # No palette space left: merge remaining pixels into the largest (tie -> latest) island
-                if remaining_pixels.any() and self.islands:
-                    target_idx = -1
-                    target_size = -1
-                    for idx, (_, gs, ge) in enumerate(self.islands):
-                        size = ge - gs + 1
-                        if size > target_size or (size == target_size and idx > target_idx):
-                            target_size = size
-                            target_idx = idx
 
-                    if target_idx >= 0:
-                        target_name = self.islands[target_idx][0]
-                        if target_name not in self.canvas.all_masks:
-                            self.canvas.all_masks[target_name] = np.zeros(non_transparent.shape, dtype=bool)
-                        self.canvas.all_masks[target_name] |= remaining_pixels
+            # Build mask stack aligned to islands order
+            mask_stack = []
+            for name, _, _ in islands:
+                mask = self.canvas.all_masks.get(name)
+                if mask is None:
+                    mask = np.zeros((height, width), dtype=bool)
+                mask_stack.append(mask.astype(bool, copy=False))
 
-            # Recompute assigned/unassigned after potential allocation
-            all_selected = np.zeros((height, width), dtype=bool)
-            for mask in self.canvas.all_masks.values():
-                if mask is not None:
-                    all_selected |= mask
+            mask_stack_arr = np.stack(mask_stack, axis=0) if mask_stack else np.zeros((0, height, width), dtype=bool)
 
-            unselected_pixels = non_transparent & ~all_selected
+            grayscale_np, palette_img, mask_stack_out = build_grayscale_and_palette_from_islands(
+                self.canvas.original_image,
+                islands,
+                mask_stack_arr,
+                palette_size,
+                palette_height,
+            )
 
-            # Generate grayscale atlas
-            grayscale_output = np.zeros((height, width), dtype=np.uint8)
-            rgb_array = self.canvas.original_image[:, :, :3]
+            # Update stored masks with any changes from helper (e.g., merged leftovers)
+            for (name, _, _), m in zip(islands, mask_stack_out):
+                self.canvas.all_masks[name] = m.astype(bool, copy=False)
 
-            # Calculate luminosity once
-            luminosity = (0.299 * rgb_array[:, :, 0] +
-                          0.587 * rgb_array[:, :, 1] +
-                          0.114 * rgb_array[:, :, 2])
-
-            # Dictionary to store original colors for each island
-            island_colors = {}
-
-            # Process each island (including the newly added remainder island if any)
-            for island_name, gray_start, gray_end in self.islands:
-                if island_name not in self.canvas.all_masks:
-                    continue
-
-                mask = self.canvas.all_masks[island_name]
-                if not mask.any():
-                    print(f"Warning: {island_name} has no selection")
-                    continue
-
-                # Get luminosity values only for this island
-                island_luminosity = luminosity[mask]
-
-                if len(island_luminosity) == 0:
-                    continue
-
-                # Normalize to gray range
-                lum_min = island_luminosity.min()
-                lum_max = island_luminosity.max()
-
-                if lum_max - lum_min < 1:
-                    lum_max = lum_min + 1
-
-                normalized = (luminosity[mask] - lum_min) / (lum_max - lum_min)
-                remapped_palette_space = gray_start + normalized * (gray_end - gray_start)
-                # Scale to game (0-255) index space
-                remapped = remapped_palette_space * palette_to_game_scale
-
-                grayscale_output[mask] = remapped.astype(np.uint8)
-
-                # Store original RGB colors mapped to their grayscale values
-                island_rgb = rgb_array[mask]
-                island_gray = remapped_palette_space.astype(np.uint8)
-
-                # For each gray value in this island's range, collect all colors
-                color_map = {}
-                for gray_val in range(gray_start, gray_end + 1):
-                    color_map[gray_val] = []
-
-                for rgb, gray in zip(island_rgb, island_gray):
-                    color_map[gray].append(rgb)
-
-                # Average colors for each gray value
-                averaged_colors = {}
-                for gray_val, colors in color_map.items():
-                    if colors:
-                        averaged_colors[gray_val] = np.mean(colors, axis=0).astype(np.uint8)
-                    else:
-                        # No color at this gray value, interpolate
-                        averaged_colors[gray_val] = None
-
-                island_colors[island_name] = averaged_colors
-
-            # Process any still-unassigned pixels (should be rare)
-            if unselected_pixels.any():
-                # If we added a remainder island, its mask should be updated already; otherwise, merge into target island
-                target_mask_name = added_remaining_island
-                if target_mask_name is None:
-                    # Choose largest/last island again
-                    target_idx = -1
-                    target_size = -1
-                    for idx, (_, gs, ge) in enumerate(self.islands):
-                        size = ge - gs + 1
-                        if size > target_size or (size == target_size and idx > target_idx):
-                            target_size = size
-                            target_idx = idx
-                    target_mask_name = self.islands[target_idx][0] if target_idx >= 0 else None
-
-                if target_mask_name:
-                    if target_mask_name not in self.canvas.all_masks:
-                        self.canvas.all_masks[target_mask_name] = np.zeros(non_transparent.shape, dtype=bool)
-                    self.canvas.all_masks[target_mask_name] |= unselected_pixels
-                    mask = self.canvas.all_masks[target_mask_name]
-
-                    # Recompute luminosity mapping for these pixels using the target island's gray range
-                    target_gray_start, target_gray_end = next(
-                        (gs, ge) for name, gs, ge in self.islands if name == target_mask_name)
-                    unselected_luminosity = luminosity[unselected_pixels]
-                    lum_min = unselected_luminosity.min()
-                    lum_max = unselected_luminosity.max()
-
-                    if lum_max - lum_min < 1:
-                        lum_max = lum_min + 1
-
-                    normalized = (luminosity[unselected_pixels] - lum_min) / (lum_max - lum_min)
-                    remapped_palette_space = target_gray_start + normalized * (target_gray_end - target_gray_start)
-                    remapped = remapped_palette_space * palette_to_game_scale
-                    grayscale_output[unselected_pixels] = remapped.astype(np.uint8)
-
-                    # Store averaged colors for palette generation
-                    unselected_rgb = rgb_array[unselected_pixels]
-                    unselected_gray = remapped_palette_space.astype(np.uint8)
-
-                    color_map = {gray_val: [] for gray_val in range(target_gray_start, target_gray_end + 1)}
-                    for rgb, gray in zip(unselected_rgb, unselected_gray):
-                        color_map[gray].append(rgb)
-
-                    averaged_colors = {}
-                    for gray_val, colors in color_map.items():
-                        if colors:
-                            averaged_colors[gray_val] = np.mean(colors, axis=0).astype(np.uint8)
-                        else:
-                            averaged_colors[gray_val] = None
-
-                    island_colors.setdefault(target_mask_name, {}).update(averaged_colors)
-
-            # Save grayscale atlas
-            def _fill_transparent_with_nearest(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
-                """Fill transparent pixels by copying the nearest non-transparent value (fast EDT-based)."""
-                if mask is None or img.shape != mask.shape:
-                    return img
-                if not mask.any():
-                    return img
-
-                transparent = ~mask
-                if not transparent.any():
-                    return img
-
-                # Distance transform: for each pixel, get indices of the nearest non-transparent pixel
-                # ndimage.distance_transform_edt returns (distance, indices); indices has shape (ndim, h, w)
-                _, nearest_indices = ndimage.distance_transform_edt(transparent, return_indices=True)
-                nearest_y, nearest_x = nearest_indices
-
-                filled = img.copy()
-                filled[transparent] = img[nearest_y[transparent], nearest_x[transparent]]
-                return filled
-
-            # Fill transparent areas by dilating nearest non-transparent values, then BC7-smooth blocks
-            grayscale_filled = _fill_transparent_with_nearest(grayscale_output, non_transparent)
-
-            save_image(Image.fromarray(grayscale_filled, mode='L'), grayscale_path)
-
-            # Generate LUT palette from actual colors
-            palette_height = 16
-            palette_width = cfg.get(cfg.ci_default_palette_size)
-            palette = np.zeros((palette_height, palette_width, 3), dtype=np.uint8)
-
-            # First row uses actual averaged colors
-            for island_name, gray_start, gray_end in self.islands:
-                if island_name not in island_colors:
-                    continue
-
-                colors = island_colors[island_name]
-
-                # Fill in the palette with actual colors, interpolating gaps
-                for gray_val in range(gray_start, min(gray_end + 1, palette_width)):
-                    if colors.get(gray_val) is not None:
-                        palette[0, gray_val] = colors[gray_val]
-                    else:
-                        # Interpolate from nearest known colors
-                        # Find previous and next known colors
-                        prev_val, next_val = None, None
-                        for g in range(gray_val - 1, gray_start - 1, -1):
-                            if colors.get(g) is not None:
-                                prev_val = g
-                                break
-                        for g in range(gray_val + 1, gray_end + 1):
-                            if colors.get(g) is not None:
-                                next_val = g
-                                break
-
-                        if prev_val is not None and next_val is not None:
-                            # Interpolate
-                            t = (gray_val - prev_val) / (next_val - prev_val)
-                            color = (1 - t) * colors[prev_val] + t * colors[next_val]
-                            palette[0, gray_val] = color.astype(np.uint8)
-                        elif prev_val is not None:
-                            palette[0, gray_val] = colors[prev_val]
-                        elif next_val is not None:
-                            palette[0, gray_val] = colors[next_val]
-
-            # Copy actual averaged colors into all rows
-            for theme_row in range(1, palette_height):
-                palette[theme_row, :] = palette[0, :]
-
-            # Save palette
-            palette_img = Image.fromarray(palette, mode='RGB')
+            save_image(Image.fromarray(grayscale_np, mode='L'), grayscale_path)
             save_image(palette_img, palette_path, True)
 
-            # Auto-save islands NPZ into the shared app-root npz folder
-            npz_path = self._auto_save_island_state()
+            # Persist NPZ alongside shared workflow
+            npz_path = save_islands_npz(self.image_path, islands, mask_stack_out, width, height)
             if npz_path:
                 logger.info("Palette islands NPZ saved to %s", npz_path)
 
-            QMessageBox.information(
-                self,
-                "Success",
-                f"Files generated successfully!\n\n"
-                f"Grayscale: {grayscale_path}\n"
-                f"Palette: {palette_path}\n"
-                f"Total Islands Processed: {len(self.islands)}\n"
-                f"Unselected pixels: {'Yes' if unselected_pixels.any() else 'None'}\n\n",
+            all_selected = np.zeros((height, width), dtype=bool)
+            for m in mask_stack_out:
+                all_selected |= m
+            unselected_pixels = non_transparent & ~all_selected
+
+            InfoBar.success(
+                title=self.tr("Success"),
+                content=self.tr(
+                    f"Files generated successfully!\n\n"
+                    f"Grayscale: {grayscale_path}\n"
+                    f"Palette: {palette_path}\n"
+                    f"Total Islands Processed: {len(islands)}\n"
+                    f"Unselected pixels: {'Yes' if unselected_pixels.any() else 'None'}\n\n"
+                ),
+                duration=5000,
+                parent=self,
             )
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to generate files:\n{str(e)}")
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Failed to generate files:\n{str(e)}"),
+                duration=5000,
+                parent=self,
+            )
             import traceback
             traceback.print_exc()

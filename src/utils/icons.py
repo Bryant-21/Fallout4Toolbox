@@ -74,6 +74,7 @@ class CustomIcons(FluentIconBase, Enum):
     HEIGHT = "height"
     RESCALE = "rescale"
     PALETTE = "palette"
+    PALETTE_2 = "palette-2"
     SWATCH = "swatch"
     GRAPH = "graph"
     BGSM = "bgsm"

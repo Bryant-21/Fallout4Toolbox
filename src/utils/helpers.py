@@ -2,13 +2,13 @@ from typing import Union
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, QRect, QPropertyAnimation, QEasingCurve, QEvent
+from PySide6.QtCore import Qt, QRect, QPropertyAnimation, QEasingCurve, QEvent, QSize
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette, QIcon, QPixmap, QImage
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QApplication, QLabel, QFrame, QSizePolicy, QLayout, QSplitter
 )
 from qfluentwidgets import NavigationInterface, FluentIconBase, NavigationItemPosition, NavigationTreeWidget, BodyLabel, \
-    qrouter, CommandBar, Action, ScrollArea
+    qrouter, CommandBar, Action, ScrollArea, SplashScreen
 from qfluentwidgets import ToolButton, FluentIcon as FIF, isDarkTheme
 from qfluentwidgets.window.fluent_window import FluentWindowBase, FluentTitleBar
 
@@ -195,6 +195,11 @@ class CustomFluentWindow(FluentWindowBase):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setTitleBar(FluentTitleBar(self))
+        self.icon_path = "resource/icon.ico"
+        self.icon = QIcon(self.icon_path)
+        self.setWindowIcon(self.icon)
+        self.splashScreen = SplashScreen(self.windowIcon(), self)
+        self.splashScreen.setIconSize(QSize(102, 102))
 
         self.navigationInterface = NavigationInterface(self, showReturnButton=True)
         self.widgetLayout = QVBoxLayout()
