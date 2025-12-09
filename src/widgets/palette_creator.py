@@ -1692,6 +1692,48 @@ class PaletteLUTGenerator(BaseWidget):
                 parent=self,
             )
 
+            # Auto Preview: switch to Palette Preview and load generated files
+            try:
+                if bool(cfg.get(cfg.ci_auto_preview)):
+                    win = self.window()
+                    if win is not None and hasattr(win, 'stackedWidget'):
+                        try:
+                            from src.widgets.palette_applier import PaletteApplier  # local import to avoid cycles
+                        except Exception:
+                            PaletteApplier = None  # type: ignore
+
+                        target = None
+                        if PaletteApplier is not None:
+                            try:
+                                for i in range(win.stackedWidget.count()):
+                                    w = win.stackedWidget.widget(i)
+                                    if isinstance(w, PaletteApplier):
+                                        target = w
+                                        break
+                            except Exception:
+                                target = None
+
+                        if target is not None:
+                            # Switch view if possible
+                            try:
+                                if hasattr(win, 'switchTo'):
+                                    win.switchTo(target)
+                            except Exception:
+                                pass
+
+                            # Load the generated palette and greyscale
+                            try:
+                                if hasattr(target, 'load_palette_from_path'):
+                                    target.load_palette_from_path(palette_path)
+                                if hasattr(target, 'load_greyscale_from_path'):
+                                    target.load_greyscale_from_path(grayscale_path)
+                            except Exception:
+                                logger.exception("Auto Preview: failed to load generated images into PaletteApplier")
+                        else:
+                            logger.warning("Auto Preview enabled but PaletteApplier widget was not found.")
+            except Exception:
+                logger.exception("Auto Preview handling failed")
+
         except Exception as e:
             InfoBar.error(
                 title=self.tr("Error"),

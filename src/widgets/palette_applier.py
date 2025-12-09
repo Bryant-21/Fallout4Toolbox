@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QImage
-from PySide6.QtWidgets import QWidget, QFileDialog
+from PySide6.QtWidgets import QWidget, QFileDialog, QHBoxLayout
 from qfluentwidgets import RangeConfigItem, RangeValidator, FluentIcon as FIF, PushSettingCard, RangeSettingCard
 
 from src.utils.dds_utils import load_image
@@ -38,6 +38,9 @@ class PaletteApplier(BaseWidget):
         # Fixed reference greyscale (always grayscale_4k_cutout, right preview)
         self.greyscale_ref_path: Optional[str] = None
         self.greyscale_ref_img: Optional[Image.Image] = None  # L (8-bit)
+
+        row_1 = QHBoxLayout(self)
+        row_2 = QHBoxLayout(self)
 
         # Cards
         self.palette_card = PushSettingCard(
@@ -86,10 +89,13 @@ class PaletteApplier(BaseWidget):
         cfg.ci_palette_filter_type.valueChanged.connect(self.update_preview)
 
         # Layout
-        self.addToFrame(self.palette_card)
-        self.addToFrame(self.greyscale_card)
-        self.addToFrame(self.row_card)
-        self.addToFrame(self.card_uv_set)
+        row_1.addWidget(self.palette_card)
+        row_1.addWidget(self.greyscale_card)
+        row_2.addWidget(self.row_card)
+        row_2.addWidget(self.card_uv_set)
+
+        self.addToLayout(row_1)
+        self.addToLayout(row_2)
 
         # Two previews side-by-side
         self.addToFrame(self.preview_pane)
@@ -108,6 +114,19 @@ class PaletteApplier(BaseWidget):
         path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Palette"), "", self.tr("Images (*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds)"))
         if not path:
             return
+        self.load_palette_from_path(path)
+
+    def on_select_greyscale(self):
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Greyscale Image"), "", self.tr("Images (*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds)"))
+        if not path:
+            return
+        self.load_greyscale_from_path(path)
+
+    # -------------- Helpers --------------
+    def load_palette_from_path(self, path: str) -> None:
+        """Programmatically load a palette image from a file path and refresh preview."""
+        if not path:
+            return
         try:
             img = load_image(path)
         except Exception as e:
@@ -122,12 +141,11 @@ class PaletteApplier(BaseWidget):
         self._ensure_default_greyscale_loaded()
         self.update_preview()
 
-    def on_select_greyscale(self):
-        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Greyscale Image"), "", self.tr("Images (*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds)"))
+    def load_greyscale_from_path(self, path: str) -> None:
+        """Programmatically load a greyscale image from a file path and refresh preview."""
         if not path:
             return
         try:
-            # Load (supports DDS) and convert to L (8-bit)
             img = load_image(path, f='L')
         except Exception as e:
             logger.exception("Failed to open greyscale image: %s", e)
@@ -143,8 +161,6 @@ class PaletteApplier(BaseWidget):
             self.on_analyze_greyscale()
         except Exception:
             logger.exception("Greyscale analysis post-select failed")
-
-    # -------------- Helpers --------------
     def _ensure_default_greyscale_loaded(self):
         """Ensure the fixed reference greyscale (grayscale_4k_cutout) is loaded for the right preview."""
         if self.greyscale_ref_img is not None:

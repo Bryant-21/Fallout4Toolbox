@@ -112,12 +112,15 @@ class Config(QConfig):
     ci_palette_filter_type = OptionsConfigItem("palette", "palette_filter_type", "linear",
                                                 OptionsValidator(["linear", "nearest", "cubic", "gaussian", "cubic_gaussian"]))
 
+    # Auto preview: after generating grayscale & palette, switch to Palette Preview and load outputs
+    ci_auto_preview = ConfigItem("palette", "auto_preview", True, BoolValidator())
+
     # Semi-transparent handling modes
     ci_semi_transparent_mode = OptionsConfigItem(
         "palette",
         "semi_transparent_mode",
         "mask",
-        OptionsValidator(["mask", "nearest_fill", "premultiply_snap"])
+        OptionsValidator(["mask", "nearest_fill", "premultiply_snap", "none"])
     )
 
     # Greyscale mapping strategy
@@ -147,7 +150,7 @@ class Config(QConfig):
             "median",  # Median filter: preserves edges better while smoothing
             "bilateral"  # Bilateral: edge-preserving smoothing (best quality, slower)
         ]))
-    ci_palette_smooth_strength = RangeConfigItem("palette", "palette_smooth_strength", 0.3, RangeValidator(0.0, 1.0))
+    ci_palette_smooth_strength = RangeConfigItem("palette", "palette_smooth_strength", 30, RangeValidator(0, 100))
 
     #theme
     themeColor = ColorConfigItem("QFluentWidgets", "ThemeColor", '#ffa11d', restart=True)

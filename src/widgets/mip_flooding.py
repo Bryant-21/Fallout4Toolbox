@@ -152,6 +152,7 @@ class MipFloodingWidget(BaseWidget):
         # Buttons
         self.btn_process = PrimaryPushButton(icon=FIF.RIGHT_ARROW, text=self.tr("Process Folder"))
         self.btn_process.clicked.connect(self._on_process_folder)
+        self.boxLayout.addStretch()
         self.addButtonBarToBottom(self.btn_process)
 
         self.settings_widget = BasicSettings(self)

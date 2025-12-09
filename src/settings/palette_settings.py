@@ -74,7 +74,8 @@ class PaletteSettings(GenericSettings):
             texts=[
                 "mask - Treat semi-transparent as transparent (remove)",
                 "nearest_fill - Replace with nearest opaque color then mask",
-                "premultiply_snap - Premultiply RGB then snap alpha to 0/255"
+                "premultiply_snap - Premultiply RGB then snap alpha to 0/255",
+                "none - For Testing"
             ],
             parent=self
         )
@@ -84,6 +85,13 @@ class PaletteSettings(GenericSettings):
             title=self.tr("Upscale Palette To 256"),
             content=self.tr("If palette has < 256 colors, interpolate and smooth to 256 to reduce harsh transitions"),
             configItem=cfg.ci_palette_upscale_to_256
+        )
+
+        self.auto_preview_switch = SwitchSettingCard(
+            icon=CustomIcons.PREVIEW_FILE.icon() if hasattr(CustomIcons, 'PREVIEW_FILE') else CustomIcons.IMAGE.icon(),
+            title=self.tr("Auto Preview"),
+            content=self.tr("After generating both images, automatically open Palette Preview and load them"),
+            configItem=cfg.ci_auto_preview
         )
 
         self.greyscale_mapping_strategy_card = OptionsSettingCard(
@@ -156,6 +164,7 @@ class PaletteSettings(GenericSettings):
         self.settings_group.addSettingCard(self.palette_smooth_method_card)
         self.settings_group.addSettingCard(self.palette_smooth_strength_card)
         self.settings_group.addSettingCard(self.upscale_palette_switch)
+        self.settings_group.addSettingCard(self.auto_preview_switch)
         self.settings_group.addSettingCard(self.fix_scaled_uv)
 
         # add cards to group

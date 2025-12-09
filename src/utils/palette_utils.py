@@ -1,7 +1,7 @@
 import json
+import logging
 import math
 import os
-import logging
 
 import cv2
 import imagequant
@@ -15,7 +15,7 @@ from src.utils.appconfig import cfg
 from src.utils.filesystem_utils import get_app_root
 from src.utils.logging_utils import logger
 
-SEMI_TRANSPARENT_ALPHA_THRESHOLD = 250
+SEMI_TRANSPARENT_ALPHA_THRESHOLD = 254
 
 
 # --- Quantize -------------------------------------------------------------
@@ -559,7 +559,9 @@ def auto_create_islands_from_rgba(rgba: np.ndarray,
         raise ValueError("RGBA image required for island generation")
 
     semi_mode = cfg.get(cfg.ci_semi_transparent_mode) if hasattr(cfg, "ci_semi_transparent_mode") else "mask"
-    rgba = _apply_semi_transparent_mode(rgba, semi_mode, SEMI_TRANSPARENT_ALPHA_THRESHOLD)
+
+    if semi_mode != "none":
+        rgba = _apply_semi_transparent_mode(rgba, semi_mode, SEMI_TRANSPARENT_ALPHA_THRESHOLD)
 
     if palette_size <= 0:
         raise ValueError("Palette size must be greater than zero to auto create islands.")
@@ -786,50 +788,60 @@ def _map_luminosity_default(luminosity: np.ndarray, gray_start: int, gray_end: i
 
 def _map_guard_bands_quantile(luminosity: np.ndarray, gray_start: int, gray_end: int,
                                palette_to_game_scale: float, guard_band_width: int = 1) -> np.ndarray:
-    """Hybrid: Guard bands + quantile distribution (recommended)."""
+    """Hybrid: Guard bands + quantile distribution (recommended).
+    
+    This function preserves all unique luminosity values by mapping them evenly
+    across the effective palette range, avoiding color loss.
+    """
     effective_start = gray_start + guard_band_width
     effective_end = gray_end - guard_band_width
     effective_range = max(1, effective_end - effective_start + 1)
     
-    lum_min = luminosity.min()
-    lum_max = luminosity.max()
+    # Get unique luminosity values and their inverse mapping
+    unique_lum, inverse_indices = np.unique(luminosity, return_inverse=True)
+    num_unique = len(unique_lum)
     
-    if lum_max - lum_min < 1:
-        lum_max = lum_min + 1
+    if num_unique == 0:
+        return np.zeros_like(luminosity, dtype=np.uint8)
     
-    # Sort luminosity values and assign ranks
-    sorted_indices = np.argsort(luminosity)
-    ranks = np.empty_like(sorted_indices)
-    ranks[sorted_indices] = np.arange(len(luminosity))
+    # Map unique luminosity values evenly across the effective range
+    if num_unique == 1:
+        # Single color: map to middle of effective range
+        unique_palette_indices = np.array([effective_start + effective_range // 2])
+    else:
+        # Multiple colors: spread evenly across effective range
+        unique_palette_indices = np.linspace(effective_start, effective_end, num_unique)
     
-    # Map ranks to effective range using quantile distribution
-    # This preserves all unique colors by spreading them evenly
-    rank_normalized = ranks.astype(np.float32) / max(1, len(luminosity) - 1)
-    remapped_palette_space = effective_start + rank_normalized * (effective_end - effective_start)
+    # Map all pixels using inverse indices
+    remapped_palette_space = unique_palette_indices[inverse_indices]
     
     return (remapped_palette_space * palette_to_game_scale).astype(np.uint8)
 
 
 def _map_quantile(luminosity: np.ndarray, gray_start: int, gray_end: int,
                   palette_to_game_scale: float, guard_band_width: int = 0) -> np.ndarray:
-    """Quantile-based distribution without guard bands."""
-    effective_range = max(1, gray_end - gray_start + 1)
+    """Quantile-based distribution without guard bands.
     
-    lum_min = luminosity.min()
-    lum_max = luminosity.max()
+    This function preserves all unique luminosity values by mapping them evenly
+    across the palette range, avoiding color loss.
+    """
+    # Get unique luminosity values and their inverse mapping
+    unique_lum, inverse_indices = np.unique(luminosity, return_inverse=True)
+    num_unique = len(unique_lum)
     
-    if lum_max - lum_min < 1:
-        lum_max = lum_min + 1
+    if num_unique == 0:
+        return np.zeros_like(luminosity, dtype=np.uint8)
     
-    # Sort luminosity values and assign ranks
-    sorted_indices = np.argsort(luminosity)
-    ranks = np.empty_like(sorted_indices)
-    ranks[sorted_indices] = np.arange(len(luminosity))
+    # Map unique luminosity values evenly across the palette range
+    if num_unique == 1:
+        # Single color: map to middle of range
+        unique_palette_indices = np.array([gray_start + (gray_end - gray_start) // 2])
+    else:
+        # Multiple colors: spread evenly across full range
+        unique_palette_indices = np.linspace(gray_start, gray_end, num_unique)
     
-    # Map ranks to palette range using quantile distribution
-    # This preserves all unique colors by spreading them evenly
-    rank_normalized = ranks.astype(np.float32) / max(1, len(luminosity) - 1)
-    remapped_palette_space = gray_start + rank_normalized * (gray_end - gray_start)
+    # Map all pixels using inverse indices
+    remapped_palette_space = unique_palette_indices[inverse_indices]
     
     return (remapped_palette_space * palette_to_game_scale).astype(np.uint8)
 
@@ -1389,7 +1401,7 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
     # Apply palette smoothing if enabled to reduce harsh color transitions
     # Now smooth the entire palette image (all rows together)
     palette_smooth_method = cfg.get(cfg.ci_palette_smooth_method) if hasattr(cfg, "ci_palette_smooth_method") else "none"
-    palette_smooth_strength = float(cfg.get(cfg.ci_palette_smooth_strength)) if hasattr(cfg, "ci_palette_smooth_strength") else 0.0
+    palette_smooth_strength = float(cfg.get(cfg.ci_palette_smooth_strength) / 100) if hasattr(cfg, "ci_palette_smooth_strength") else 0.0
 
     if palette_smooth_method != "none" and palette_smooth_strength > 0.0:
         palette = _smooth_palette_image(palette, palette_smooth_method, palette_smooth_strength)

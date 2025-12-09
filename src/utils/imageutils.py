@@ -19,15 +19,34 @@ def dilation_fill_static(out_path: Path, rgba_img: Image.Image, max_iters: int =
             (-1, 0), (1, 0), (0, -1), (0, 1),
             (-1, -1), (-1, 1), (1, -1), (1, 1)
         ]
+
+        # Helper: non-wrapping shift (pads with zeros) to avoid edge wrap-around blending
+        def shift_no_wrap(img: Image.Image, dx: int, dy: int) -> Image.Image:
+            w, h = img.size
+            result = Image.new(img.mode, (w, h))
+            # Compute source and destination rectangles
+            src_x0 = max(0, -dx)
+            src_y0 = max(0, -dy)
+            src_x1 = min(w, w - dx) if dx >= 0 else w
+            src_y1 = min(h, h - dy) if dy >= 0 else h
+            if src_x0 >= src_x1 or src_y0 >= src_y1:
+                return result
+            region = img.crop((src_x0, src_y0, src_x1, src_y1))
+            dst_x = max(0, dx)
+            dst_y = max(0, dy)
+            result.paste(region, (dst_x, dst_y))
+            return result
+
         filled_any = False
         for _ in range(max_iters):
             iter_filled = False
             for dx, dy in neighbors:
-                shifted_known = ImageChops.offset(known, dx, dy)
+                # Use non-wrapping shift so we never blend/copy colors from the opposite edge
+                shifted_known = shift_no_wrap(known, dx, dy)
                 fill_mask = ImageChops.multiply(shifted_known, unknown)
                 if fill_mask.getbbox() is None:
                     continue
-                shifted_rgb = ImageChops.offset(base_rgb, dx, dy)
+                shifted_rgb = shift_no_wrap(base_rgb, dx, dy)
                 base_rgb.paste(shifted_rgb, mask=fill_mask)
                 unknown = ImageChops.subtract(unknown, fill_mask)
                 known = ImageChops.lighter(known, fill_mask)
