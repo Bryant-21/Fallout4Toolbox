@@ -18,6 +18,149 @@ from src.utils.logging_utils import logger
 SEMI_TRANSPARENT_ALPHA_THRESHOLD = 254
 
 
+# --- Island Auto-Balancing --------------------------------------------------
+def _autobalance_island_ranges(islands: list[tuple[str, int, int]],
+                               masks: list[np.ndarray],
+                               rgb_array: np.ndarray,
+                               palette_size: int) -> list[tuple[str, int, int]]:
+    """Shift palette index boundaries so that under-utilized islands receive slots from
+    neighboring islands with spare capacity. Runs before quantization.
+
+    Rules:
+      - Each island keeps at least 1 slot.
+      - Only adjust at shared boundaries with immediate neighbors to preserve order.
+      - Do not exceed [0, palette_size-1].
+    """
+    if not islands or palette_size <= 1:
+        return islands
+
+    # Compute unique color counts per island and initial sizes
+    island_stats = []
+    for (name, g0, g1), mask in zip(islands, masks):
+        try:
+            size = max(1, int(g1) - int(g0) + 1)
+        except Exception:
+            size = 1
+
+        unique_colors = 0
+        try:
+            if mask is not None and mask.any():
+                arr = rgb_array[mask]
+                if arr.size > 0:
+                    unique_colors = int(np.unique(arr.reshape(-1, 3), axis=0).shape[0])
+        except Exception:
+            unique_colors = 0
+
+        deficit = max(0, unique_colors - size)
+        extra = max(0, size - unique_colors)
+        island_stats.append({
+            'name': name,
+            'g0': int(g0),
+            'g1': int(g1),
+            'size': size,
+            'unique': unique_colors,
+            'deficit': deficit,
+            'extra': extra,
+        })
+
+    total_deficit = sum(s['deficit'] for s in island_stats)
+    total_extra = sum(s['extra'] for s in island_stats)
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Island auto-balance: total_deficit=%d, total_extra=%d", total_deficit, total_extra)
+
+    if total_deficit == 0 or total_extra == 0:
+        # Nothing to do
+        return [(s['name'], s['g0'], s['g1']) for s in island_stats]
+
+    n = len(island_stats)
+
+    # Helper to ensure constraints after any boundary change
+    def clamp_and_fix(idx: int):
+        s = island_stats[idx]
+        # Clamp boundaries to palette limits
+        s['g0'] = max(0, min(s['g0'], palette_size - 1))
+        s['g1'] = max(0, min(s['g1'], palette_size - 1))
+        if s['g1'] < s['g0']:
+            s['g1'] = s['g0']
+        s['size'] = s['g1'] - s['g0'] + 1
+
+    # Iteratively satisfy deficits by borrowing from neighbors
+    progress = True
+    while progress:
+        progress = False
+        for i in range(n):
+            rec = island_stats[i]
+            rec_need = rec['deficit']
+            if rec_need <= 0:
+                continue
+
+            # Try left neighbor
+            take_left = 0
+            if i - 1 >= 0:
+                left = island_stats[i - 1]
+                # available to donate from left is its current extra, but also cannot reduce below 1 slot
+                left_available = max(0, left['extra'])
+                # Additionally, boundary constraint: we can only donate if left has at least 2 slots
+                left_available = min(left_available, max(0, (left['g1'] - left['g0']) - 0))
+                if left_available > 0 and rec['g0'] > 0 and left['g1'] + 1 == rec['g0']:
+                    take_left = min(rec_need, left_available)
+
+            # Try right neighbor
+            take_right = 0
+            if i + 1 < n:
+                right = island_stats[i + 1]
+                right_available = max(0, right['extra'])
+                right_available = min(right_available, max(0, (right['g1'] - right['g0']) - 0))
+                if right_available > 0 and rec['g1'] < palette_size - 1 and rec['g1'] + 1 == right['g0']:
+                    take_right = min(rec_need - take_left, right_available)
+
+            if take_left == 0 and take_right == 0:
+                # If neighbors have no "extra" by our metric, allow borrowing down to at least 1 slot if they are under-utilized (size>1)
+                if i - 1 >= 0 and rec_need > 0:
+                    left = island_stats[i - 1]
+                    if left['g1'] + 1 == rec['g0'] and (left['g1'] - left['g0'] + 1) > 1:
+                        take_left = min(rec_need, (left['g1'] - left['g0']))
+                if i + 1 < n and (rec_need - take_left) > 0:
+                    right = island_stats[i + 1]
+                    if rec['g1'] + 1 == right['g0'] and (right['g1'] - right['g0'] + 1) > 1:
+                        take_right = min(rec_need - take_left, (right['g1'] - right['g0']))
+
+            if take_left > 0:
+                # Move boundary leftward by take_left
+                left = island_stats[i - 1]
+                left['g1'] -= take_left
+                rec['g0'] -= take_left
+                left['extra'] = max(0, left['g1'] - left['g0'] + 1 - left['unique'])
+                clamp_and_fix(i - 1)
+                clamp_and_fix(i)
+                rec_need -= take_left
+                progress = True
+
+            if take_right > 0:
+                # Move boundary rightward by take_right
+                right = island_stats[i + 1]
+                right['g0'] += take_right
+                rec['g1'] += take_right
+                right['extra'] = max(0, right['g1'] - right['g0'] + 1 - right['unique'])
+                clamp_and_fix(i + 1)
+                clamp_and_fix(i)
+                rec_need -= take_right
+                progress = True
+
+            # Update receiver deficit after borrowing
+            rec['size'] = rec['g1'] - rec['g0'] + 1
+            rec['deficit'] = max(0, rec['unique'] - rec['size'])
+
+    # Final log per island
+    if logger.isEnabledFor(logging.DEBUG):
+        for s in island_stats:
+            logger.debug("Island balance: %s -> range [%d, %d], unique=%d, size=%d",
+                         s['name'], s['g0'], s['g1'], s['unique'], s['size'])
+
+    return [(s['name'], s['g0'], s['g1']) for s in island_stats]
+
+
 # --- Quantize -------------------------------------------------------------
 def quantize_image(i, method: QuantAlgorithm = QuantAlgorithm.libimagequant, final_colors: int = 0):
     """Quantize image using the specified method
@@ -323,6 +466,68 @@ def build_palette_row_from_recolor(grey_img: Image.Image,
     return palette_row
 
 
+def postprocess_palette_row(palette_row: np.ndarray,
+                            islands: list,
+                            guard_band_width: int | None = None,
+                            smoothing: str | None = None,
+                            smoothing_strength: float | None = None) -> np.ndarray:
+    """Apply optional guard-band fill and gradient smoothing to a palette row.
+
+    This mirrors creator-time post-processing so rows added later match the
+    look of palettes produced by the creator pipeline.
+
+    Args:
+        palette_row: Array of shape (W, 3), dtype uint8.
+        islands: List of (name, gray_start, gray_end) tuples.
+        guard_band_width: Width in indices to blend at island boundaries. If None, uses cfg.ci_guard_band_width.
+        smoothing: One of {"none","gaussian","median","bilateral"}. If None, uses cfg.ci_palette_smooth_method.
+        smoothing_strength: 0..1 float strength (if None, derived from cfg.ci_palette_smooth_strength as 0..100 -> 0..1).
+
+    Returns:
+        A new palette row (W, 3) uint8 after post-processing.
+    """
+    if palette_row is None or palette_row.size == 0:
+        return palette_row
+
+    row = np.array(palette_row, copy=True)
+
+    # Resolve defaults from config if not provided
+    if guard_band_width is None:
+        try:
+            guard_band_width = int(cfg.get(cfg.ci_guard_band_width))
+        except Exception:
+            guard_band_width = 0
+
+    if smoothing is None:
+        try:
+            smoothing = cfg.get(cfg.ci_palette_smooth_method)
+        except Exception:
+            smoothing = "none"
+
+    if smoothing_strength is None:
+        try:
+            # Config stores 0..100; convert to 0..1
+            smoothing_strength = float(cfg.get(cfg.ci_palette_smooth_strength)) / 100.0
+        except Exception:
+            smoothing_strength = 0.0
+
+    # 1) Guard-band fill at island boundaries
+    if guard_band_width and guard_band_width > 0 and islands:
+        try:
+            _fill_guard_bands(row, islands, guard_band_width)
+        except Exception as e:
+            logger.warning("Guard-band fill failed: %s", e)
+
+    # 2) Optional palette gradient smoothing
+    if smoothing and smoothing.lower() != "none" and smoothing_strength > 0:
+        try:
+            row = _smooth_palette_gradient(row, method=smoothing.lower(), strength=float(smoothing_strength))
+        except Exception as e:
+            logger.warning("Palette smoothing failed: %s", e)
+
+    return row
+
+
 def apply_palette_to_greyscale(palette_img: Image.Image, grey_img: Image.Image, palette_row=None, filter_type=None) -> Image.Image:
     """Apply palette row to a greyscale image, preserving alpha if present.
 
@@ -335,7 +540,9 @@ def apply_palette_to_greyscale(palette_img: Image.Image, grey_img: Image.Image, 
         palette_img: The palette image to sample colors from
         grey_img: The greyscale image to colorize
         palette_row: Optional pre-extracted palette row
-        filter_type: "linear" for smooth interpolation, "nearest" for exact color preservation.
+        filter_type: "linear" for smooth interpolation, "nearest" for exact color preservation,
+                     "anchored_linear" for smooth interpolation anchored to game greys so palette
+                     node colors remain exact at their corresponding grey steps.
                      If None, uses the config setting ci_palette_filter_type.
     
     Returns RGB if no alpha, RGBA if alpha present.
@@ -380,6 +587,34 @@ def apply_palette_to_greyscale(palette_img: Image.Image, grey_img: Image.Image, 
                 interpolated = f(xi)
                 # Clip to valid range and convert to uint8
                 lut[:, c] = np.clip(interpolated, 0, 255).astype(np.uint8)
+
+        elif filter_type == "anchored_linear":
+            # Build LUT anchored at the exact greys that correspond to palette indices.
+            # The game-addressable greys for node k are round(k * 255 / (pw-1)).
+            gk = np.rint(np.linspace(0, 255, num=pw)).astype(int)
+            lut = np.zeros((256, 3), dtype=np.uint8)
+            # Left of first anchor and right of last anchor will be clamped later
+            # Set anchor colors exactly
+            lut[gk] = palette_row
+            # Fill between anchors with linear interpolation in greyscale domain
+            for k in range(pw - 1):
+                start_g = int(gk[k])
+                end_g = int(gk[k + 1])
+                if end_g <= start_g:
+                    continue
+                span = end_g - start_g
+                for c in range(3):
+                    start_v = int(palette_row[k, c])
+                    end_v = int(palette_row[k + 1, c])
+                    # Fill [start_g, end_g) so that lut[end_g] stays as anchor for k+1
+                    lut[start_g:end_g, c] = np.linspace(start_v, end_v, span, endpoint=False).astype(np.uint8)
+            # Clamp ends
+            first_g = int(gk[0])
+            last_g = int(gk[-1])
+            if first_g > 0:
+                lut[:first_g, :] = palette_row[0]
+            if last_g < 255:
+                lut[last_g+1:, :] = palette_row[-1]
 
         elif filter_type == "gaussian":
             # Gaussian filtering: applies smoothing before interpolation
@@ -617,26 +852,8 @@ def auto_create_islands_from_rgba(rgba: np.ndarray,
     if not components:
         raise ValueError("No sufficiently large regions found.")
 
-    base_size = palette_size // desired_islands
-    remainder = palette_size % desired_islands
-
-    island_specs = []
-    current_start = 0
-    for i in range(desired_islands):
-        size = base_size + (1 if i < remainder else 0)
-        if size <= 0:
-            continue
-        gray_start = current_start
-        gray_end = current_start + size - 1
-        island_specs.append({
-            "gray_start": gray_start,
-            "gray_end": gray_end,
-            "capacity": size
-        })
-        current_start += size
-
-    if not island_specs:
-        raise ValueError("Unable to divide the palette into islands with the current palette size.")
+    # We will allocate grayscale capacity AFTER grouping, proportionally to
+    # each group's unique color diversity, using standard step sizes (multiples of 8).
 
     hist_weight = 0.75
 
@@ -705,6 +922,99 @@ def auto_create_islands_from_rgba(rgba: np.ndarray,
             "unique_colors": set(),
             "regions": []
         })
+
+    # Determine proportional island capacities (multiples of 8) based on unique color counts
+    step = 8
+    if palette_size < step:
+        raise ValueError("Palette size must be at least 8.")
+
+    # Total units in steps of 8
+    total_units = palette_size // step
+    if total_units * step != palette_size:
+        logger.warning("Palette size %d is not a multiple of 8; truncating to %d.", palette_size, total_units * step)
+
+    # Limit to desired number of islands; pad with empty groups if needed (already done below)
+    # Compute weights from unique color counts
+    uniq_counts = [max(0, len(g["unique_colors"])) for g in groups]
+    sum_w = sum(uniq_counts)
+    # If there is no color diversity at all, fallback to pixel totals
+    if sum_w == 0:
+        uniq_counts = [max(0, int(g.get("pixel_total", 0))) for g in groups]
+        sum_w = sum(uniq_counts)
+    # If still zero (all empty), distribute evenly
+    if sum_w == 0:
+        uniq_counts = [1 for _ in groups]
+        sum_w = len(uniq_counts)
+
+    # Initial floor allocation in units, with minimum 1 unit (i.e., 8) per island that has any weight
+    prelim_units = []
+    fracs = []
+    for w in uniq_counts:
+        prop = (w / sum_w) * total_units if sum_w > 0 else 0.0
+        units_floor = int(math.floor(prop))
+        prelim_units.append(units_floor)
+        fracs.append(prop - units_floor)
+
+    used_units = sum(prelim_units)
+    # Ensure at least 1 unit for islands that have non-zero weight
+    for i, w in enumerate(uniq_counts):
+        if w > 0 and prelim_units[i] == 0:
+            prelim_units[i] = 1
+            used_units += 1
+
+    # Adjust to exactly total_units by adding/removing units based on fractional parts
+    def add_units(k: int):
+        nonlocal used_units
+        # Give units to the islands with largest fractional part first
+        order = sorted(range(len(prelim_units)), key=lambda i: fracs[i], reverse=True)
+        idx = 0
+        while k > 0 and used_units < total_units and idx < len(order):
+            prelim_units[order[idx]] += 1
+            used_units += 1
+            k -= 1
+            idx += 1
+
+    def remove_units(k: int):
+        nonlocal used_units
+        # Remove units from islands with smallest fractional part first, but keep at least 1 if they had weight
+        order = sorted(range(len(prelim_units)), key=lambda i: fracs[i])
+        idx = 0
+        while k > 0 and used_units > total_units and idx < len(order):
+            i = order[idx]
+            min_allowed = 1 if uniq_counts[i] > 0 else 0
+            if prelim_units[i] > min_allowed:
+                prelim_units[i] -= 1
+                used_units -= 1
+                k -= 1
+            idx += 1
+
+    if used_units < total_units:
+        add_units(total_units - used_units)
+    elif used_units > total_units:
+        remove_units(used_units - total_units)
+
+    # Build island specs in image order (contiguous grayscale ranges)
+    island_specs = []
+    current_start = 0
+    for units in prelim_units:
+        size = max(0, units * step)
+        if size == 0:
+            # Create an empty slice when no capacity; still maintain contiguous ranges
+            gray_start = current_start
+            gray_end = current_start - 1  # empty
+        else:
+            gray_start = current_start
+            gray_end = current_start + size - 1
+        island_specs.append({
+            "gray_start": gray_start,
+            "gray_end": gray_end,
+            "capacity": size
+        })
+        current_start += size
+
+    if not island_specs or current_start != total_units * step:
+        # Safety: ensure specs cover exactly the truncated palette size
+        raise ValueError("Failed to allocate proportional island capacities.")
 
     island_data: list[dict | None] = [None] * len(island_specs)
     groups_sorted_for_capacity = sorted(enumerate(groups), key=lambda t: len(t[1]["unique_colors"]), reverse=True)
@@ -783,7 +1093,7 @@ def _map_luminosity_default(luminosity: np.ndarray, gray_start: int, gray_end: i
     
     normalized = (luminosity - lum_min) / (lum_max - lum_min)
     remapped_palette_space = gray_start + normalized * (gray_end - gray_start)
-    return (remapped_palette_space * palette_to_game_scale).astype(np.uint8)
+    return np.rint(remapped_palette_space * palette_to_game_scale).astype(np.uint8)
 
 
 def _map_guard_bands_quantile(luminosity: np.ndarray, gray_start: int, gray_end: int,
@@ -815,7 +1125,7 @@ def _map_guard_bands_quantile(luminosity: np.ndarray, gray_start: int, gray_end:
     # Map all pixels using inverse indices
     remapped_palette_space = unique_palette_indices[inverse_indices]
     
-    return (remapped_palette_space * palette_to_game_scale).astype(np.uint8)
+    return np.rint(remapped_palette_space * palette_to_game_scale).astype(np.uint8)
 
 
 def _map_quantile(luminosity: np.ndarray, gray_start: int, gray_end: int,
@@ -843,7 +1153,7 @@ def _map_quantile(luminosity: np.ndarray, gray_start: int, gray_end: int,
     # Map all pixels using inverse indices
     remapped_palette_space = unique_palette_indices[inverse_indices]
     
-    return (remapped_palette_space * palette_to_game_scale).astype(np.uint8)
+    return np.rint(remapped_palette_space * palette_to_game_scale).astype(np.uint8)
 
 
 def _map_guard_bands(luminosity: np.ndarray, gray_start: int, gray_end: int,
@@ -861,7 +1171,151 @@ def _map_guard_bands(luminosity: np.ndarray, gray_start: int, gray_end: int,
     
     normalized = (luminosity - lum_min) / (lum_max - lum_min)
     remapped_palette_space = effective_start + normalized * effective_range
-    return (remapped_palette_space * palette_to_game_scale).astype(np.uint8)
+    return np.rint(remapped_palette_space * palette_to_game_scale).astype(np.uint8)
+
+
+def _map_smoothed_quantile(luminosity: np.ndarray, gray_start: int, gray_end: int,
+                           palette_to_game_scale: float,
+                           guard_band_width: int = 1,
+                           bins: int = 256,
+                           sigma: float = 1.5,
+                           alpha: float = 0.3) -> np.ndarray:
+    """Smoothed-quantile mapping via blurred histogram ECDF, optionally blended toward linear.
+
+    Args:
+        luminosity: 1D array of luminance values for island pixels (uint8 or float)
+        gray_start, gray_end: island palette-space bounds (inclusive)
+        palette_to_game_scale: scale factor from palette-space index to 0..255 space
+        guard_band_width: number of palette indices reserved at each edge
+        bins: histogram bins for ECDF
+        sigma: Gaussian sigma (in bins) to smooth histogram
+        alpha: blend toward linear mapping in [0,1]
+    """
+    eff_start = gray_start + max(0, int(guard_band_width))
+    eff_end = gray_end - max(0, int(guard_band_width))
+    rng = max(1, eff_end - eff_start)
+
+    L = luminosity.astype(np.float32)
+    Lmin = float(L.min())
+    Lmax = float(L.max())
+    if not np.isfinite(Lmin) or not np.isfinite(Lmax):
+        return np.zeros_like(luminosity, dtype=np.uint8)
+    if Lmax - Lmin < 1.0:
+        Lmax = Lmin + 1.0
+    z = (L - Lmin) / (Lmax - Lmin)
+    z = np.clip(z, 0.0, 1.0)
+
+    bins = int(max(16, bins))
+    try:
+        hist, edges = np.histogram(z, bins=bins, range=(0.0, 1.0), density=False)
+    except Exception:
+        return np.rint((np.full_like(luminosity, eff_start + rng // 2, dtype=np.float32) * palette_to_game_scale)).astype(np.uint8)
+
+    # Smooth histogram and build CDF
+    sigma = float(max(0.0, sigma))
+    if sigma > 0.0:
+        hist = ndimage.gaussian_filter1d(hist.astype(np.float32), sigma=sigma, mode="nearest")
+    else:
+        hist = hist.astype(np.float32)
+    total = float(hist.sum())
+    if total <= 0.0:
+        g = np.full_like(z, eff_start + rng * 0.5, dtype=np.float32)
+        return (g * palette_to_game_scale).astype(np.uint8)
+    cdf = np.cumsum(hist)
+    cdf /= (cdf[-1] + 1e-8)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    Fz = np.interp(z, centers, cdf, left=0.0, right=1.0).astype(np.float32)
+
+    g_quant = eff_start + Fz * rng
+
+    # Linear mapping component for tempering
+    g_lin = eff_start + z * rng
+
+    a = float(np.clip(alpha, 0.0, 1.0))
+    g = (1.0 - a) * g_quant + a * g_lin
+    return np.rint(g * palette_to_game_scale).astype(np.uint8)
+
+
+def _map_tempered_quantile(luminosity: np.ndarray, gray_start: int, gray_end: int,
+                           palette_to_game_scale: float,
+                           guard_band_width: int = 0,
+                           alpha: float = 0.3) -> np.ndarray:
+    """Blend quantile (optionally with guard bands) with linear luminosity mapping.
+
+    alpha=0 → pure quantile; alpha=1 → pure linear.
+    """
+    # Quantile part
+    if guard_band_width and guard_band_width > 0:
+        gq = _map_guard_bands_quantile(luminosity, gray_start, gray_end, palette_to_game_scale, guard_band_width)
+        gl = _map_guard_bands(luminosity, gray_start, gray_end, palette_to_game_scale, guard_band_width)
+    else:
+        gq = _map_quantile(luminosity, gray_start, gray_end, palette_to_game_scale, 0)
+        gl = _map_luminosity_default(luminosity, gray_start, gray_end, palette_to_game_scale, 0)
+
+    a = float(np.clip(alpha, 0.0, 1.0))
+    # Work in scaled (0..255) space directly
+    g = (1.0 - a) * gq.astype(np.float32) + a * gl.astype(np.float32)
+    return np.rint(g).astype(np.uint8)
+
+
+def _map_spline_quantile(luminosity: np.ndarray, gray_start: int, gray_end: int,
+                         palette_to_game_scale: float,
+                         guard_band_width: int = 1,
+                         profile: str = "even",
+                         gamma: float = 1.0) -> np.ndarray:
+    """Monotone spline mapping using data quantile anchors to avoid sharp steps.
+
+    We compute anchors at fixed quantiles qs of the normalized luminance distribution.
+    The x-anchors are the data quantiles xp = Q_z(qs); y-anchors are evenly spaced
+    (optionally shape-adjusted) indices within the effective island range. We then
+    use a monotone PCHIP interpolator to map z → y smoothly.
+    """
+    eff_start = gray_start + max(0, int(guard_band_width))
+    eff_end = gray_end - max(0, int(guard_band_width))
+    rng = max(1, eff_end - eff_start)
+
+    L = luminosity.astype(np.float32)
+    Lmin = float(np.min(L))
+    Lmax = float(np.max(L))
+    if Lmax - Lmin < 1.0:
+        Lmax = Lmin + 1.0
+    z = (L - Lmin) / (Lmax - Lmin)
+    z = np.clip(z, 0.0, 1.0)
+
+    # Anchor quantiles
+    qs = np.array([0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0], dtype=np.float32)
+    try:
+        xp = np.quantile(z, qs)
+    except Exception:
+        xp = qs.copy()
+
+    # Ensure strictly increasing x for PCHIP
+    # If duplicates occur, slightly jitter them forward by tiny eps
+    eps = 1e-4
+    for i in range(1, len(xp)):
+        if xp[i] <= xp[i-1]:
+            xp[i] = min(1.0, xp[i-1] + eps)
+
+    # Shape y anchors according to profile
+    q_out = qs.copy()
+    gamma = float(max(1e-3, gamma))
+    if profile == "compressed_ends":
+        # push toward center: use power >1
+        q_out = np.power(q_out, gamma)
+    elif profile == "expanded_ends":
+        # expand ends: use root (power <1)
+        q_out = np.power(q_out, 1.0 / gamma)
+
+    y = eff_start + q_out * rng
+
+    try:
+        pchip = interpolate.PchipInterpolator(xp, y, extrapolate=True)
+        g = pchip(z.astype(np.float32)).astype(np.float32)
+    except Exception:
+        # Fallback to linear if PCHIP fails
+        g = eff_start + z * rng
+
+    return np.rint(g * palette_to_game_scale).astype(np.uint8)
 
 
 def _map_color_clustering(rgb_array: np.ndarray, mask: np.ndarray, gray_start: int, gray_end: int,
@@ -1049,7 +1503,7 @@ def _smooth_palette_gradient(palette_row: np.ndarray, method: str = "gaussian",
 
 
 def _smooth_palette_image(palette_img: np.ndarray, method: str = "gaussian", 
-                          strength: float = 1.0) -> np.ndarray:
+                         strength: float = 1.0) -> np.ndarray:
     """Smooth the entire palette image to reduce artifacts.
     
     This operates on a full 2D palette image (height x width x 3) rather than a single row.
@@ -1122,7 +1576,8 @@ def _upscale_palette_to_256(palette_img: np.ndarray, original_width: int) -> np.
 
 
 def _fill_guard_bands(palette_row: np.ndarray, islands: list[tuple[str, int, int]], 
-                      guard_band_width: int) -> None:
+                     guard_band_width: int,
+                     anchor_mask: np.ndarray | None = None) -> None:
     """Fill guard band indices with interpolated colors between islands."""
     if guard_band_width <= 0:
         return
@@ -1143,13 +1598,14 @@ def _fill_guard_bands(palette_row: np.ndarray, islands: list[tuple[str, int, int
                 
                 # Fill boundary with weighted interpolation
                 # 67/33 split favoring the "owning" island
-                if curr_end < len(palette_row):
+                if curr_end < len(palette_row) and not (anchor_mask is not None and anchor_mask[curr_end]):
                     palette_row[curr_end] = (0.67 * curr_color + 0.33 * next_color).astype(np.uint8)
-                if next_start < len(palette_row):
+                if next_start < len(palette_row) and not (anchor_mask is not None and anchor_mask[next_start]):
                     palette_row[next_start] = (0.33 * curr_color + 0.67 * next_color).astype(np.uint8)
 
 
-def _fill_nearest_neighbor_guard_bands(palette_row: np.ndarray, islands: list[tuple[str, int, int]]) -> None:
+def _fill_nearest_neighbor_guard_bands(palette_row: np.ndarray, islands: list[tuple[str, int, int]],
+                                       anchor_mask: np.ndarray | None = None) -> None:
     """Fill first and last indices of each island with nearest neighbor colors.
     
     For nearest_neighbor_reserve strategy:
@@ -1163,18 +1619,479 @@ def _fill_nearest_neighbor_guard_bands(palette_row: np.ndarray, islands: list[tu
         if island_size > 2:
             # First index copies from next index
             if gray_start < len(palette_row) and gray_start + 1 < len(palette_row):
-                palette_row[gray_start] = palette_row[gray_start + 1]
+                if not (anchor_mask is not None and anchor_mask[gray_start]):
+                    palette_row[gray_start] = palette_row[gray_start + 1]
             
             # Last index copies from previous index
             if gray_end < len(palette_row) and gray_end - 1 >= 0:
-                palette_row[gray_end] = palette_row[gray_end - 1]
+                if not (anchor_mask is not None and anchor_mask[gray_end]):
+                    palette_row[gray_end] = palette_row[gray_end - 1]
+
+
+def _rgb_to_lab_cv(rgb_list: np.ndarray) -> np.ndarray:
+    """Convert an array of RGB uint8 colors (N,3) to Lab uint8 using OpenCV space.
+    Returns array (N,3) uint8.
+    """
+    if rgb_list.size == 0:
+        return rgb_list
+    rgb_reshaped = rgb_list.reshape(-1, 1, 3)
+    lab = cv2.cvtColor(rgb_reshaped, cv2.COLOR_RGB2LAB)
+    return lab.reshape(-1, 3)
+
+
+def _lab_to_rgb_cv(lab_color: np.ndarray) -> np.ndarray:
+    """Convert a single Lab uint8 color (3,) to RGB uint8 using OpenCV space."""
+    lab = lab_color.reshape(1, 1, 3)
+    rgb = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+    return rgb.reshape(3)
+
+
+def _delta_e_simple(lab_a: np.ndarray, lab_b: np.ndarray) -> float:
+    """Simple Euclidean distance in OpenCV Lab space."""
+    diff = lab_a.astype(np.int16) - lab_b.astype(np.int16)
+    return float(np.sqrt(np.sum(diff * diff)))
+
+
+def _apply_tone_curve_np(x01: np.ndarray, s: float, gamma: float, b: float, w: float) -> np.ndarray:
+    """Apply a simple monotone tone curve to normalized grayscale x in [0,1].
+    Parameters are small perturbations to keep appearance natural.
+    b and w are black/white point shifts in normalized units.
+    """
+    # Protect denominator
+    denom = max(1e-6, 1.0 - b - w)
+    x1 = np.clip((x01 - b) / denom, 0.0, 1.0)
+    # Gamma
+    x2 = np.power(np.clip(x1, 1e-6, 1.0), gamma)
+    # Contrast around mid-gray
+    x3 = 0.5 + s * (x2 - 0.5)
+    return np.clip(x3, 0.0, 1.0)
+
+
+def _map_by_strategy_for_scoring(strategy_name: str,
+                                 island_lum: np.ndarray,
+                                 gray_start: int,
+                                 gray_end: int,
+                                 palette_to_game_scale: float,
+                                 guard_band_width: int,
+                                 rgb_array: np.ndarray | None,
+                                 mask: np.ndarray | None,
+                                 island_index: int) -> np.ndarray:
+    """Helper to reuse existing mapping functions for scoring."""
+    if strategy_name == "guard_bands_quantile":
+        return _map_guard_bands_quantile(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width)
+    elif strategy_name == "quantile":
+        return _map_quantile(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width)
+    elif strategy_name == "guard_bands":
+        return _map_guard_bands(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width)
+    elif strategy_name == "nearest_neighbor_reserve":
+        return _map_nearest_neighbor_reserve(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width)
+    elif strategy_name == "alternating_luminosity":
+        return _map_alternating_luminosity(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width, island_index)
+    elif strategy_name == "color_clustering":
+        # For scoring, fall back to luminosity default to avoid heavy/full-image ops
+        return _map_luminosity_default(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width)
+    elif strategy_name == "perceptual":
+        # For scoring, fall back to luminosity default to avoid heavy/full-image ops
+        return _map_luminosity_default(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width)
+    elif strategy_name == "reverse_luminosity":
+        return _map_reverse_luminosity(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width)
+    elif strategy_name == "smoothed_quantile":
+        bins = int(cfg.get(cfg.ci_smoothed_quantile_bins)) if hasattr(cfg, "ci_smoothed_quantile_bins") else 256
+        sigma = float(cfg.get(cfg.ci_smoothed_quantile_sigma)) if hasattr(cfg, "ci_smoothed_quantile_sigma") else 1.5
+        alpha_pct = int(cfg.get(cfg.ci_smoothed_quantile_alpha)) if hasattr(cfg, "ci_smoothed_quantile_alpha") else 30
+        alpha_blend = max(0.0, min(1.0, alpha_pct / 100.0))
+        return _map_smoothed_quantile(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width, bins, sigma, alpha_blend)
+    elif strategy_name == "tempered_quantile":
+        alpha_pct = int(cfg.get(cfg.ci_tempered_quantile_alpha)) if hasattr(cfg, "ci_tempered_quantile_alpha") else 30
+        alpha_blend = max(0.0, min(1.0, alpha_pct / 100.0))
+        return _map_tempered_quantile(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width, alpha_blend)
+    elif strategy_name == "spline_quantile":
+        profile = cfg.get(cfg.ci_spline_profile) if hasattr(cfg, "ci_spline_profile") else "even"
+        gamma = float(cfg.get(cfg.ci_spline_gamma)) if hasattr(cfg, "ci_spline_gamma") else 1.0
+        return _map_spline_quantile(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width, profile, gamma)
+    else:
+        return _map_luminosity_default(island_lum, gray_start, gray_end, palette_to_game_scale, guard_band_width)
+
+
+def _score_mapping_histograms(histograms: list[np.ndarray]) -> float:
+    """Compute a collision score: penalize overfull bins and unused bins.
+    Lower is better.
+    """
+    score = 0.0
+    for hist in histograms:
+        n_pix = int(hist.sum())
+        n_bins = len(hist)
+        if n_bins <= 0:
+            continue
+        if n_pix == 0:
+            # no pixels in this island region
+            continue
+        target = n_pix / max(1, n_bins)
+        over = np.maximum(0.0, hist - target)
+        score += float((over ** 1.7).sum())
+        score += 0.1 * float((hist == 0).sum())
+    return score
+
+
+def resolve_grayscale_collisions(luminosity_u8: np.ndarray,
+                                 islands: list[tuple[str, int, int]],
+                                 masks: list[np.ndarray],
+                                 rgb_array: np.ndarray,
+                                 mapping_strategy: str,
+                                 guard_band_width: int,
+                                 palette_to_game_scale: float) -> np.ndarray:
+    """Randomized search over tone-curve parameters to reduce grayscale collisions.
+
+    Returns an adjusted luminosity (uint8) to be used by existing mapping code.
+    Applies only global adjustments and optional tiny per-island tweaks (monotone),
+    without bespoke per-pixel arbitrary edits.
+    """
+    tries = int(cfg.get(cfg.ci_collision_resolver_tries)) if hasattr(cfg, "ci_collision_resolver_tries") else 15
+    per_island = bool(cfg.get(cfg.ci_collision_resolver_per_island)) if hasattr(cfg, "ci_collision_resolver_per_island") else True
+    resolver_mode = cfg.get(cfg.ci_collision_resolver_strategy) if hasattr(cfg, "ci_collision_resolver_strategy") else "gray_curve"
+    nat_w = float(cfg.get(cfg.ci_collision_resolver_naturalness_w)) if hasattr(cfg, "ci_collision_resolver_naturalness_w") else 0.10
+    coll_w = float(cfg.get(cfg.ci_collision_resolver_collision_w)) if hasattr(cfg, "ci_collision_resolver_collision_w") else 1.0
+    if not np.isfinite(nat_w):
+        nat_w = 0.10
+    nat_w = float(max(0.0, min(1.0, nat_w)))
+    if not np.isfinite(coll_w):
+        coll_w = 1.0
+    coll_w = float(max(0.0, min(10.0, coll_w)))
+
+    # Baseline indices for naturalness
+    base_histograms: list[np.ndarray] = []
+    base_indices_concat = []
+    # Build baseline mapping using current luminosity and masks
+    # Also prepare downsample mask for speed
+    subsample = 2
+    h, w = luminosity_u8.shape[:2]
+    ys = slice(0, h, subsample)
+    xs = slice(0, w, subsample)
+    lum_ds = luminosity_u8[ys, xs].astype(np.float32)
+    masks_ds = [m[ys, xs] if m is not None else None for m in masks]
+
+    def map_and_hist(lum_img_u8: np.ndarray) -> tuple[list[np.ndarray], np.ndarray]:
+        indices_maps = []
+        histograms = []
+        for i, (isl, m) in enumerate(zip(islands, masks_ds)):
+            island_name, gray_start, gray_end = isl
+            if m is None or not np.any(m):
+                histograms.append(np.zeros(max(0, gray_end - gray_start + 1), dtype=np.int64))
+                continue
+            island_lum = lum_img_u8[m].astype(np.float32)
+            # Map using selected strategy
+            remapped = _map_by_strategy_for_scoring(mapping_strategy,
+                                                    island_lum,
+                                                    gray_start, gray_end,
+                                                    palette_to_game_scale,
+                                                    guard_band_width,
+                                                    rgb_array,  # can be None for non-RGB strategies
+                                                    m,
+                                                    i)
+            # Convert to palette space indices (integer bins within island range)
+            island_gray = np.rint(remapped / palette_to_game_scale).astype(np.int32)
+            # Clamp to island range
+            island_gray = np.clip(island_gray, gray_start, gray_end)
+            # Histogram within island
+            bins = max(0, gray_end - gray_start + 1)
+            if bins == 0:
+                hist = np.zeros(0, dtype=np.int64)
+            else:
+                hist = np.bincount(island_gray - gray_start, minlength=bins)
+            histograms.append(hist.astype(np.float64))
+            indices_maps.append(island_gray)
+        # Concatenate for naturalness measurement
+        if indices_maps:
+            concat = np.concatenate([arr.ravel() for arr in indices_maps if arr.size > 0])
+        else:
+            concat = np.zeros((0,), dtype=np.int32)
+        return histograms, concat
+
+    base_histograms, base_indices_concat = map_and_hist(lum_ds)
+    base_hist_score_raw = _score_mapping_histograms(base_histograms)
+    base_total_pixels = sum(int(h.sum()) for h in base_histograms)
+    base_hist_score = base_hist_score_raw / max(1, base_total_pixels)
+
+    # Helper: count collisions across all islands
+    def _count_collisions(histos: list[np.ndarray]) -> int:
+        total = 0.0
+        for h in histos:
+            n_pix = float(h.sum())
+            n_bins = len(h)
+            if n_pix <= 0 or n_bins <= 0:
+                continue
+            # Ideal uniform occupancy per bin; collisions are the excess above this ideal.
+            ideal = n_pix / float(max(1, n_bins))
+            over = h.astype(np.float64) - ideal
+            over = over[over > 0]
+            if over.size:
+                total += float(over.sum())
+        return int(round(total))
+
+    base_collisions = _count_collisions(base_histograms)
+    base_score = base_hist_score + coll_w * float(base_collisions)
+
+    if logger.isEnabledFor(logging.DEBUG):
+        try:
+            logger.debug(
+                "Collision resolver: base score=%.3f, base collisions=%d, strategy=%s, tries=%d, per_island=%s, resolver_mode=%s, naturalness_w=%.3f, collision_w=%.3f",
+                base_score,
+                base_collisions,
+                mapping_strategy,
+                int(cfg.get(cfg.ci_collision_resolver_tries)) if hasattr(cfg, "ci_collision_resolver_tries") else 15,
+                str(bool(cfg.get(cfg.ci_collision_resolver_per_island)) if hasattr(cfg, "ci_collision_resolver_per_island") else True),
+                resolver_mode,
+                nat_w,
+                coll_w
+            )
+        except Exception:
+            # Avoid breaking pipeline due to logging issues
+            pass
+
+    best_score = base_score
+    best_params = None
+    best_lum = luminosity_u8
+    best_collisions = base_collisions
+    best_total_from_tie = False
+
+    rng = np.random.default_rng()
+
+    x01_full = luminosity_u8.astype(np.float32) / 255.0
+    rgb01 = None
+    try:
+        if rgb_array is not None and rgb_array.ndim >= 2:
+            rgb01 = rgb_array.astype(np.float32) / 255.0
+    except Exception:
+        rgb01 = None
+
+    for t in range(max(1, tries)):
+        # Select which strategy to try this iteration
+        mode = resolver_mode
+        if resolver_mode == "hybrid":
+            mode = rng.choice(["gray_curve", "per_channel_gamma", "rgb_weight_mix"])  # type: ignore[arg-type]
+
+        params_desc = ""
+        cand_u8: np.ndarray
+
+        if mode == "per_channel_gamma" and rgb01 is not None:
+            # Adjust each RGB channel slightly, recompute luminance.
+            gR = float(rng.uniform(0.92, 1.08))
+            gG = float(rng.uniform(0.92, 1.08))
+            gB = float(rng.uniform(0.92, 1.08))
+            kR = float(rng.uniform(0.97, 1.03))
+            kG = float(rng.uniform(0.97, 1.03))
+            kB = float(rng.uniform(0.97, 1.03))
+            oR = float(rng.uniform(-0.01, 0.01))
+            oG = float(rng.uniform(-0.01, 0.01))
+            oB = float(rng.uniform(-0.01, 0.01))
+
+            R = np.clip(kR * np.power(np.clip(rgb01[:, :, 0], 1e-6, 1.0), gR) + oR, 0.0, 1.0)
+            G = np.clip(kG * np.power(np.clip(rgb01[:, :, 1], 1e-6, 1.0), gG) + oG, 0.0, 1.0)
+            B = np.clip(kB * np.power(np.clip(rgb01[:, :, 2], 1e-6, 1.0), gB) + oB, 0.0, 1.0)
+            # Use fixed Rec.601-ish weights (match existing 0.299/0.587/0.114 mapping)
+            x_adj = 0.299 * R + 0.587 * G + 0.114 * B
+            cand_u8 = np.clip(np.rint(x_adj * 255.0), 0, 255).astype(np.uint8)
+            params_desc = f"mode=per_channel_gamma gR={gR:.4f} gG={gG:.4f} gB={gB:.4f} kR={kR:.4f} kG={kG:.4f} kB={kB:.4f} oR={oR:.4f} oG={oG:.4f} oB={oB:.4f}"
+
+        elif mode == "rgb_weight_mix" and rgb01 is not None:
+            # Slightly vary the luminance weights around standard values; keep non-negative and sum=1
+            base_w = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+            delta = rng.normal(0.0, 0.03, size=3).astype(np.float32)  # small perturbation
+            w_raw = np.clip(base_w + delta, 0.0, None)
+            if float(w_raw.sum()) <= 1e-6:
+                w = base_w
+            else:
+                w = w_raw / float(w_raw.sum())
+            x_adj = w[0] * rgb01[:, :, 0] + w[1] * rgb01[:, :, 1] + w[2] * rgb01[:, :, 2]
+            cand_u8 = np.clip(np.rint(x_adj * 255.0), 0, 255).astype(np.uint8)
+            params_desc = f"mode=rgb_weight_mix wR={w[0]:.4f} wG={w[1]:.4f} wB={w[2]:.4f}"
+
+        else:
+            # Default gray curve mode (existing behavior)
+            s = float(rng.uniform(0.95, 1.05))
+            gamma = float(rng.uniform(0.90, 1.12))
+            b = float(rng.uniform(-0.03, 0.03))
+            wshift = float(rng.uniform(-0.03, 0.03))
+            if b + wshift > 0.06:
+                scale = 0.06 / (b + wshift + 1e-6)
+                b *= scale
+                wshift *= scale
+
+            x_adj = _apply_tone_curve_np(x01_full, s, gamma, b, wshift)
+
+            if per_island and masks:
+                # Tiny per-island tweak within [0,1]
+                x_per = x_adj.copy()
+                for i, (isl, m) in enumerate(zip(islands, masks)):
+                    if m is None or not np.any(m):
+                        continue
+                    gamma_i = float(rng.uniform(0.97, 1.05))
+                    delta_i = float(rng.uniform(-0.015, 0.015))
+                    vals = x_per[m]
+                    vals = np.power(np.clip(vals, 1e-6, 1.0), gamma_i)
+                    vals = np.clip(vals + delta_i, 0.0, 1.0)
+                    # Project to island allowed grey range in normalized units
+                    lo = (isl[1] / 255.0)
+                    hi = (isl[2] / 255.0)
+                    vals = np.clip(vals, lo, hi)
+                    x_per[m] = vals
+                x_adj = x_per
+
+            cand_u8 = np.clip(np.rint(x_adj * 255.0), 0, 255).astype(np.uint8)
+            params_desc = f"mode=gray_curve s={s:.4f} gamma={gamma:.4f} b={b:.4f} w={wshift:.4f}"
+
+        # Score on downsampled grid
+        cand_ds = cand_u8[ys, xs]
+        histos, idx_concat = map_and_hist(cand_ds)
+        hist_score_raw = _score_mapping_histograms(histos)
+        hist_total_pixels = sum(int(h.sum()) for h in histos)
+        hist_score = hist_score_raw / max(1, hist_total_pixels)
+        cand_collisions = _count_collisions(histos)
+        # Naturalness: penalty for deviating from baseline indices (configurable weight)
+        nat_pen = 0.0
+        if idx_concat.size == base_indices_concat.size and idx_concat.size > 0:
+            nat_pen = nat_w * float(np.mean((idx_concat.astype(np.float32) - base_indices_concat.astype(np.float32)) ** 2))
+        total_score = hist_score + nat_pen + coll_w * float(cand_collisions)
+
+        improved = False
+        tie_break = False
+        eps = 1e-6
+        if total_score + eps < best_score:
+            improved = True
+        elif abs(total_score - best_score) <= eps and cand_collisions < best_collisions:
+            improved = True
+            tie_break = True
+
+        if improved:
+            prev_best_score = best_score
+            prev_best_collisions = best_collisions
+            best_score = total_score
+            best_lum = cand_u8
+            best_params = params_desc
+            # Track collisions for tie-breaking in later iterations
+            best_collisions = cand_collisions
+            if logger.isEnabledFor(logging.DEBUG):
+                try:
+                    if tie_break:
+                        logger.debug(
+                            "Collision resolver: try %d improved (tie-break by collisions) -> score %.3f, collisions %d (prev best %.3f, %d); %s",
+                            t + 1,
+                            best_score,
+                            cand_collisions,
+                            prev_best_score,
+                            prev_best_collisions,
+                            params_desc
+                        )
+                    else:
+                        logger.debug(
+                            "Collision resolver: try %d improved -> score %.3f, collisions %d (prev best %.3f, %d); %s",
+                            t + 1,
+                            best_score,
+                            cand_collisions,
+                            prev_best_score,
+                            prev_best_collisions,
+                            params_desc
+                        )
+                except Exception:
+                    pass
+
+    # Deterministic rescue step: per-island monotone equalization to spread values
+    # across available bins, often sharply reducing collisions when stochastic
+    # search fails to meaningfully improve them.
+    try:
+        if masks and len(masks) == len(islands):
+            eq_float = best_lum.astype(np.float32) / 255.0
+            for (isl, m) in zip(islands, masks):
+                if m is None or not np.any(m):
+                    continue
+                vals = eq_float[m]
+                if vals.size < 2:
+                    continue
+                lo = float(isl[1]) / 255.0
+                hi = float(isl[2]) / 255.0
+                vals = np.clip(vals, lo, hi)
+                order = np.argsort(vals)
+                target = np.linspace(lo, hi, vals.size, endpoint=True, dtype=np.float32)
+                remapped = np.empty_like(vals)
+                remapped[order] = target
+                eq_float[m] = remapped
+            eq_u8 = np.clip(np.rint(eq_float * 255.0), 0, 255).astype(np.uint8)
+
+            # Score equalized candidate on the downsampled grid
+            eq_ds = eq_u8[ys, xs]
+            histos_eq, idx_concat_eq = map_and_hist(eq_ds)
+            hist_score_raw_eq = _score_mapping_histograms(histos_eq)
+            hist_total_eq = sum(int(h.sum()) for h in histos_eq)
+            hist_score_eq = hist_score_raw_eq / max(1, hist_total_eq)
+            cand_collisions_eq = _count_collisions(histos_eq)
+            nat_pen_eq = 0.0
+            if idx_concat_eq.size == base_indices_concat.size and idx_concat_eq.size > 0:
+                nat_pen_eq = nat_w * float(np.mean((idx_concat_eq.astype(np.float32) - base_indices_concat.astype(np.float32)) ** 2))
+            total_score_eq = hist_score_eq + nat_pen_eq + coll_w * float(cand_collisions_eq)
+
+            eps = 1e-6
+            if total_score_eq + eps < best_score or (abs(total_score_eq - best_score) <= eps and cand_collisions_eq < best_collisions):
+                if logger.isEnabledFor(logging.DEBUG):
+                    try:
+                        logger.debug(
+                            "Collision resolver: deterministic equalization improved -> score %.3f, collisions %d (prev %.3f, %d)",
+                            total_score_eq,
+                            cand_collisions_eq,
+                            best_score,
+                            best_collisions,
+                        )
+                    except Exception:
+                        pass
+                best_score = total_score_eq
+                best_lum = eq_u8
+                best_collisions = cand_collisions_eq
+                best_params = "deterministic_equalization"
+    except Exception:
+        # Non-fatal; continue with best stochastic result
+        pass
+
+    if logger.isEnabledFor(logging.DEBUG):
+        try:
+            applied = best_score < base_score
+            if best_params is None:
+                logger.debug(
+                    "Collision resolver: no improvement over base. Final score=%.3f, collisions=%d",
+                    base_score, base_collisions
+                )
+            else:
+                logger.debug(
+                    "Collision resolver: best score=%.3f, collisions=%d; %s; applied=%s (nat_w=%.3f, coll_w=%.3f)",
+                    best_score, best_collisions, str(best_params), str(applied), nat_w, coll_w
+                )
+        except Exception:
+            pass
+
+    # Ensure final grayscale respects island allowed gray ranges if masks provided
+    try:
+        if masks and len(masks) == len(islands):
+            out = best_lum.copy()
+            for (isl, m) in zip(islands, masks):
+                if m is None or not np.any(m):
+                    continue
+                gmin = int(isl[1])
+                gmax = int(isl[2])
+                # clamp only pixels inside this island's mask
+                vals = out[m]
+                vals = np.clip(vals, gmin, gmax)
+                out[m] = vals
+            best_lum = out
+    except Exception:
+        # Non-fatal; mapping stage will still clamp indices
+        pass
+
+    return best_lum
 
 
 def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
                                              islands: list[tuple[str, int, int]],
                                              mask_stack: np.ndarray,
                                              palette_size: int,
-                                             palette_height: int = 16) -> tuple[np.ndarray, Image.Image, np.ndarray]:
+                                             palette_height: int = 16) -> tuple[np.ndarray, Image.Image, np.ndarray, list[tuple[str, int, int]]]:
     """Headless version of palette_creator.generate_both core pipeline."""
     if rgba is None or rgba.ndim != 3 or rgba.shape[2] < 4:
         raise ValueError("RGBA image required for palette generation")
@@ -1191,7 +2108,7 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
     grayscale_output = np.zeros((height, width), dtype=np.uint8)
 
     palette_to_game_scale = 1.0 if palette_size <= 1 else 255.0 / float(palette_size - 1)
-    
+
     # Get greyscale mapping strategy from config
     mapping_strategy = cfg.get(cfg.ci_greyscale_mapping_strategy) if hasattr(cfg, "ci_greyscale_mapping_strategy") else "luminosity"
     guard_band_width = int(cfg.get(cfg.ci_guard_band_width)) if hasattr(cfg, "ci_guard_band_width") else 0
@@ -1203,9 +2120,56 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
     while len(masks) < len(islands):
         masks.append(np.zeros((height, width), dtype=bool))
 
+    # Optional auto-balance of island ranges BEFORE any quantization/mapping
+    active_islands = islands
+    try:
+        auto_balance_enabled = cfg.get(cfg.ci_island_autobalance_enable) if hasattr(cfg, "ci_island_autobalance_enable") else False
+    except Exception:
+        auto_balance_enabled = False
+
+    if auto_balance_enabled and len(islands) > 0:
+        try:
+            balanced = _autobalance_island_ranges(islands, masks, rgb_array, palette_size)
+            # Log differences
+            if logger.isEnabledFor(logging.DEBUG):
+                for (oname, og0, og1), (nname, ng0, ng1) in zip(islands, balanced):
+                    if og0 != ng0 or og1 != ng1:
+                        logger.debug("Auto-balance: %s range [%d,%d] -> [%d,%d]", oname, og0, og1, ng0, ng1)
+            active_islands = balanced
+        except Exception:
+            logger.exception("Island auto-balance failed; proceeding with original ranges")
+
     island_colors = {}
 
-    for island_index, ((island_name, gray_start, gray_end), mask) in enumerate(zip(islands, masks)):
+    # Optional island pre-quantization flag
+    prequant_enabled = cfg.get(cfg.ci_island_prequant_enable) if hasattr(cfg, "ci_island_prequant_enable") else False
+    default_quant_method = cfg.get(cfg.ci_default_quant_method) if hasattr(cfg, "ci_default_quant_method") else QuantAlgorithm.libimagequant
+
+    # Optional: attempt to resolve grayscale collisions via global tone curve adjustments
+    try:
+        resolver_enabled = cfg.get(cfg.ci_enable_collision_resolver) if hasattr(cfg, "ci_enable_collision_resolver") else False
+    except Exception:
+        resolver_enabled = False
+
+    if resolver_enabled and len(active_islands) > 0:
+        try:
+            # Provide uint8 luminosity into resolver; it returns adjusted uint8 luminosity
+            lum_u8 = np.clip(np.rint(luminosity).astype(np.uint8), 0, 255)
+            lum_adj = resolve_grayscale_collisions(
+                lum_u8,
+                active_islands,
+                masks,
+                rgb_array,
+                mapping_strategy,
+                guard_band_width,
+                palette_to_game_scale,
+            )
+            # Use adjusted luminosity for subsequent mapping
+            luminosity = lum_adj.astype(np.float32)
+        except Exception:
+            logger.exception("Collision resolver failed; continuing with baseline luminosity")
+
+    for island_index, ((island_name, gray_start, gray_end), mask) in enumerate(zip(active_islands, masks)):
         if mask is None:
             continue
 
@@ -1215,6 +2179,65 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
         if not mask.any():
             continue
 
+        # --- Optional: pre-quantize island colors to its available slots ---
+        try:
+            island_size = max(1, int(gray_end) - int(gray_start) + 1)
+        except Exception:
+            island_size = 1
+
+        if prequant_enabled and island_size > 0:
+            # Count unique colors within island
+            island_rgb_current = rgb_array[mask]
+            if island_rgb_current.size > 0:
+                try:
+                    unique_colors_island = np.unique(island_rgb_current.reshape(-1, 3), axis=0).shape[0]
+                except Exception:
+                    unique_colors_island = 0
+            else:
+                unique_colors_island = 0
+
+            if unique_colors_island > island_size:
+                # Quantize only the island region; re-apply mask afterwards
+                try:
+                    ys, xs = np.nonzero(mask)
+                    y0, y1 = ys.min(), ys.max()
+                    x0, x1 = xs.min(), xs.max()
+
+                    sub_mask = mask[y0:y1 + 1, x0:x1 + 1]
+                    sub_rgb = rgb_array[y0:y1 + 1, x0:x1 + 1].copy()
+
+                    # Zero-out non-island pixels in the crop to avoid pulling in outside colors
+                    # (they may still influence quantization minimally but will be removed later)
+                    sub_rgb_masked = sub_rgb.copy()
+                    sub_rgb_masked[~sub_mask] = 0
+
+                    # Quantize the RGB-only image to island_size colors using configured method
+                    pil_sub = Image.fromarray(sub_rgb_masked, mode='RGB')
+                    try:
+                        q_img = quantize_image(pil_sub, method=default_quant_method, final_colors=island_size)
+                    except Exception:
+                        # Fallback: use PIL median cut if primary fails
+                        q_img = pil_sub.convert('RGB').quantize(colors=island_size, method=Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG)
+
+                    q_rgb = np.asarray(q_img.convert('RGB'))
+
+                    # Re-apply mask: update only island pixels
+                    sub_rgb[sub_mask] = q_rgb[sub_mask]
+                    rgb_array[y0:y1 + 1, x0:x1 + 1] = sub_rgb
+
+                    # Update luminosity for the changed pixels
+                    sub_lum = (0.299 * sub_rgb[:, :, 0] + 0.587 * sub_rgb[:, :, 1] + 0.114 * sub_rgb[:, :, 2]).astype(luminosity.dtype)
+                    # Write back via a view to avoid copy-on-indexing pitfalls
+                    lum_view = luminosity[y0:y1 + 1, x0:x1 + 1]
+                    lum_view[sub_mask] = sub_lum[sub_mask]
+                    luminosity[y0:y1 + 1, x0:x1 + 1] = lum_view
+
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug("Pre-quantized island '%s' to %d colors (unique before=%d)", island_name, island_size, unique_colors_island)
+                except Exception:
+                    logger.exception("Island pre-quantization failed for '%s'", island_name)
+
+        # After optional pre-quantization, compute island luminosity from possibly updated rgb_array
         island_luminosity = luminosity[mask]
         if island_luminosity.size == 0:
             continue
@@ -1252,6 +2275,33 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
             remapped = _map_reverse_luminosity(island_luminosity, gray_start, gray_end, 
                                                palette_to_game_scale, guard_band_width)
             grayscale_output[mask] = remapped
+        elif mapping_strategy == "smoothed_quantile":
+            # Parameters from config
+            bins = int(cfg.get(cfg.ci_smoothed_quantile_bins)) if hasattr(cfg, "ci_smoothed_quantile_bins") else 256
+            sigma = float(cfg.get(cfg.ci_smoothed_quantile_sigma)) if hasattr(cfg, "ci_smoothed_quantile_sigma") else 1.5
+            alpha_pct = int(cfg.get(cfg.ci_smoothed_quantile_alpha)) if hasattr(cfg, "ci_smoothed_quantile_alpha") else 30
+            alpha_blend = max(0.0, min(1.0, alpha_pct / 100.0))
+            remapped = _map_smoothed_quantile(island_luminosity, gray_start, gray_end,
+                                              palette_to_game_scale,
+                                              guard_band_width=guard_band_width,
+                                              bins=bins, sigma=sigma, alpha=alpha_blend)
+            grayscale_output[mask] = remapped
+        elif mapping_strategy == "tempered_quantile":
+            alpha_pct = int(cfg.get(cfg.ci_tempered_quantile_alpha)) if hasattr(cfg, "ci_tempered_quantile_alpha") else 30
+            alpha_blend = max(0.0, min(1.0, alpha_pct / 100.0))
+            remapped = _map_tempered_quantile(island_luminosity, gray_start, gray_end,
+                                              palette_to_game_scale,
+                                              guard_band_width=guard_band_width,
+                                              alpha=alpha_blend)
+            grayscale_output[mask] = remapped
+        elif mapping_strategy == "spline_quantile":
+            profile = cfg.get(cfg.ci_spline_profile) if hasattr(cfg, "ci_spline_profile") else "even"
+            gamma = float(cfg.get(cfg.ci_spline_gamma)) if hasattr(cfg, "ci_spline_gamma") else 1.0
+            remapped = _map_spline_quantile(island_luminosity, gray_start, gray_end,
+                                            palette_to_game_scale,
+                                            guard_band_width=guard_band_width,
+                                            profile=profile, gamma=gamma)
+            grayscale_output[mask] = remapped
         else:  # Default: "luminosity"
             remapped = _map_luminosity_default(island_luminosity, gray_start, gray_end, 
                                                palette_to_game_scale, guard_band_width)
@@ -1260,10 +2310,10 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
         # Get palette space indices for color mapping
         if mapping_strategy in ["color_clustering", "perceptual"]:
             # For these strategies, remapped values are already in game scale
-            island_gray = (grayscale_output[mask] / palette_to_game_scale).astype(np.uint8)
+            island_gray = np.rint(grayscale_output[mask] / palette_to_game_scale).astype(np.uint8)
         else:
             # For luminosity-based strategies, convert back to palette space
-            island_gray = (grayscale_output[mask] / palette_to_game_scale).astype(np.uint8)
+            island_gray = np.rint(grayscale_output[mask] / palette_to_game_scale).astype(np.uint8)
 
         island_rgb = rgb_array[mask]
 
@@ -1321,7 +2371,27 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
         averaged_colors = {}
         for gray_val, colors in color_map.items():
             if colors:
-                averaged_colors[gray_val] = np.mean(colors, axis=0).astype(np.uint8)
+                # Robust per-bin aggregation in Lab with optional ΔE clamp
+                try:
+                    robust_enable = cfg.get(cfg.ci_palette_anchor_robust_enable) if hasattr(cfg, "ci_palette_anchor_robust_enable") else True
+                    delta_e_max = float(cfg.get(cfg.ci_palette_anchor_deltaE_max)) if hasattr(cfg, "ci_palette_anchor_deltaE_max") else 2.0
+                except Exception:
+                    robust_enable = True
+                    delta_e_max = 2.0
+
+                col_arr = np.asarray(colors, dtype=np.uint8)
+                if robust_enable and col_arr.ndim == 2 and col_arr.shape[1] == 3 and col_arr.shape[0] > 0:
+                    lab = _rgb_to_lab_cv(col_arr)
+                    med = np.median(lab, axis=0).astype(np.uint8)
+                    # Clamp to nearest contributing color if ΔE too large
+                    dists = np.linalg.norm(lab.astype(np.int16) - med.astype(np.int16), axis=1)
+                    min_idx = int(np.argmin(dists))
+                    if float(dists[min_idx]) > delta_e_max:
+                        med = lab[min_idx]
+                    rgb_med = _lab_to_rgb_cv(med)
+                    averaged_colors[gray_val] = rgb_med.astype(np.uint8)
+                else:
+                    averaged_colors[gray_val] = np.mean(col_arr, axis=0).astype(np.uint8)
             else:
                 averaged_colors[gray_val] = None
 
@@ -1362,11 +2432,15 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
 
     palette_row = palette[0, :]
 
-    for island_name, gray_start, gray_end in islands:
+    # Build anchor mask (indices that came from observed colors)
+    anchor_mask = np.zeros(palette_width, dtype=bool)
+
+    for island_name, gray_start, gray_end in active_islands:
         colors = island_colors.get(island_name, {})
         for gray_val in range(gray_start, min(gray_end + 1, palette_width)):
             if colors.get(gray_val) is not None:
                 palette_row[gray_val] = colors[gray_val]
+                anchor_mask[gray_val] = True
             else:
                 prev_val, next_val = None, None
                 for g in range(gray_val - 1, gray_start - 1, -1):
@@ -1387,24 +2461,147 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
                 elif next_val is not None:
                     palette_row[gray_val] = colors[next_val]
 
-    # Fill guard bands with appropriate colors based on strategy
-    if mapping_strategy in ["guard_bands_quantile", "guard_bands"] and guard_band_width > 0:
-        _fill_guard_bands(palette_row, islands, guard_band_width)
+    # Fill guard bands with appropriate colors based on strategy (skip anchors)
+    if mapping_strategy in ["guard_bands_quantile", "guard_bands", "smoothed_quantile", "spline_quantile", "tempered_quantile"] and guard_band_width > 0:
+        _fill_guard_bands(palette_row, active_islands, guard_band_width, anchor_mask=anchor_mask)
     elif mapping_strategy == "nearest_neighbor_reserve":
-        _fill_nearest_neighbor_guard_bands(palette_row, islands)
+        _fill_nearest_neighbor_guard_bands(palette_row, active_islands, anchor_mask=anchor_mask)
 
     # Duplicate the palette row to all rows BEFORE smoothing
     # This ensures we have a proper 2D image for smoothing filters
     for theme_row in range(1, palette_height):
         palette[theme_row, :] = palette_row
 
+    # --- Optional: Anchor-snap grayscale to node greys for known original colors ---
+    try:
+        snap_enable = cfg.get(cfg.ci_linear_anchor_snap_enable) if hasattr(cfg, "ci_linear_anchor_snap_enable") else False
+    except Exception:
+        snap_enable = False
+    if snap_enable:
+        try:
+            snap_strength_pct = int(cfg.get(cfg.ci_linear_anchor_snap_strength)) if hasattr(cfg, "ci_linear_anchor_snap_strength") else 100
+        except Exception:
+            snap_strength_pct = 100
+        try:
+            snap_epsilon = float(cfg.get(cfg.ci_linear_anchor_snap_epsilon)) if hasattr(cfg, "ci_linear_anchor_snap_epsilon") else 2.0
+        except Exception:
+            snap_epsilon = 2.0
+
+        s_global = max(0.0, min(1.0, snap_strength_pct / 100.0))
+        pw = palette_width
+        if pw > 1 and s_global > 0.0:
+            # Precompute anchor info per island
+            for (island_name, gray_start, gray_end), mask in zip(active_islands, masks):
+                if mask is None or not mask.any():
+                    continue
+                # Collect anchors within this island
+                island_anchor_idx = [k for k in range(gray_start, min(gray_end + 1, pw)) if anchor_mask[k]]
+                if len(island_anchor_idx) == 0:
+                    continue
+                anchors_rgb = palette_row[island_anchor_idx]
+                # Game greys for anchors (rounded)
+                gk = np.rint(np.array(island_anchor_idx, dtype=np.float32) * (255.0 / float(pw - 1))).astype(np.uint8)
+
+                # Pixel set for this island
+                pix_rgb = rgb_array[mask]
+                if pix_rgb.size == 0:
+                    continue
+
+                # 1) Hard snap exact matches using dict of bytes → gk
+                # Build dictionary from anchor RGB to gk (first occurrence wins)
+                anchor_map = {}
+                for idx_local, k in enumerate(island_anchor_idx):
+                    rgb_t = tuple(int(v) for v in palette_row[k])
+                    if rgb_t not in anchor_map:
+                        anchor_map[rgb_t] = int(gk[idx_local])
+
+                # Prepare view for unique color processing
+                colors_flat = pix_rgb.reshape(-1, 3)
+                unique_cols, inv_idx = np.unique(colors_flat, axis=0, return_inverse=True)
+
+                # Targets initialized as NaN (no snap)
+                target_g = np.full(unique_cols.shape[0], np.nan, dtype=np.float32)
+                # Exact matches
+                for ui, col in enumerate(unique_cols):
+                    key = (int(col[0]), int(col[1]), int(col[2]))
+                    if key in anchor_map:
+                        target_g[ui] = float(anchor_map[key])
+
+                # 2) Soft snap near matches within epsilon (if epsilon > 0)
+                if snap_epsilon > 0.0:
+                    # Compute Lab distances to anchors for the unique colors that are not exact matches
+                    need_soft = np.isnan(target_g)
+                    if np.any(need_soft):
+                        try:
+                            uc = unique_cols[need_soft]
+                            lab_uc = _rgb_to_lab_cv(uc)
+                            lab_anchors = _rgb_to_lab_cv(anchors_rgb)
+                            # Broadcast distances (U x A)
+                            diff = lab_uc.astype(np.int16)[:, None, :] - lab_anchors.astype(np.int16)[None, :, :]
+                            dists = np.sqrt(np.sum(diff * diff, axis=2))
+                            min_j = np.argmin(dists, axis=1)
+                            min_d = dists[np.arange(dists.shape[0]), min_j]
+                            # Apply only where within epsilon
+                            within = min_d <= snap_epsilon
+                            if np.any(within):
+                                # Map back to indices in unique_cols
+                                idxs = np.nonzero(need_soft)[0]
+                                chosen = idxs[within]
+                                # assign target_g for chosen to the corresponding anchor gk
+                                target_g[chosen] = gk[min_j[within]].astype(np.float32)
+                                # Store per-unique snap weight for soft blending
+                                soft_w = np.zeros(unique_cols.shape[0], dtype=np.float32)
+                                soft_w[chosen] = s_global * np.clip(1.0 - (min_d[within] / snap_epsilon), 0.0, 1.0)
+                            else:
+                                soft_w = np.zeros(unique_cols.shape[0], dtype=np.float32)
+                        except Exception:
+                            # Fallback: no soft snap
+                            soft_w = np.zeros(unique_cols.shape[0], dtype=np.float32)
+                    else:
+                        soft_w = np.zeros(unique_cols.shape[0], dtype=np.float32)
+                else:
+                    soft_w = np.zeros(unique_cols.shape[0], dtype=np.float32)
+
+                # Build per-pixel targets and weights
+                per_pix_target = target_g[inv_idx]
+                per_pix_soft_w = soft_w[inv_idx]
+
+                # Current grayscale values (0..255) for this island
+                g_lin = grayscale_filled[mask].astype(np.float32)
+
+                # Hard snap where target present and weight is 1 (exact or strong)
+                # For exact matches we want hard snap (weight = 1). Ensure those have weight 1.
+                # Determine exact matches again quickly: weight == 0 but target_g set (from dict)
+                # For those, set weight to 1
+                has_target = ~np.isnan(per_pix_target)
+                # If weight was 0 but target exists, set to 1 (hard snap for exact)
+                per_pix_soft_w = np.where((has_target) & (per_pix_soft_w <= 0.0), 1.0, per_pix_soft_w)
+
+                # Blend
+                g_out = g_lin
+                if np.any(has_target):
+                    tgt = np.nan_to_num(per_pix_target, nan=g_lin)
+                    w = per_pix_soft_w.astype(np.float32)
+                    g_out = (1.0 - w) * g_lin + w * tgt
+                    g_out = np.rint(np.clip(g_out, 0.0, 255.0)).astype(np.uint8)
+                    grayscale_filled[mask] = g_out
+
     # Apply palette smoothing if enabled to reduce harsh color transitions
     # Now smooth the entire palette image (all rows together)
     palette_smooth_method = cfg.get(cfg.ci_palette_smooth_method) if hasattr(cfg, "ci_palette_smooth_method") else "none"
     palette_smooth_strength = float(cfg.get(cfg.ci_palette_smooth_strength) / 100) if hasattr(cfg, "ci_palette_smooth_strength") else 0.0
 
+    # Preserve a copy before smoothing for anchor restore
+    palette_before_smooth = palette.copy()
     if palette_smooth_method != "none" and palette_smooth_strength > 0.0:
         palette = _smooth_palette_image(palette, palette_smooth_method, palette_smooth_strength)
+        try:
+            preserve_anchors = cfg.get(cfg.ci_preserve_observed_palette_indices) if hasattr(cfg, "ci_preserve_observed_palette_indices") else True
+        except Exception:
+            preserve_anchors = True
+        if preserve_anchors:
+            # Restore anchor columns exactly
+            palette[:, anchor_mask, :] = palette_before_smooth[:, anchor_mask, :]
 
     # Implement palette upscaling if enabled
     upscale_enabled = cfg.get(cfg.ci_palette_upscale_to_256) if hasattr(cfg, "ci_palette_upscale_to_256") else False
@@ -1414,7 +2611,8 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
     palette_img = Image.fromarray(palette, mode='RGB')
 
     mask_stack_out = np.stack(masks, axis=0) if masks else np.zeros((0, height, width), dtype=bool)
-    return grayscale_filled, palette_img, mask_stack_out
+    # Return possibly adjusted islands so callers can update UI state and persistence
+    return grayscale_filled, palette_img, mask_stack_out, active_islands
 
 
 def save_islands_npz(image_path: str,

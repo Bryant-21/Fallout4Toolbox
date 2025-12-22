@@ -24,6 +24,7 @@ from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from src.utils.palette_utils import (
+    quantize_image,
     auto_create_islands_from_rgba,
     build_grayscale_and_palette_from_islands,
     save_islands_npz,
@@ -132,13 +133,30 @@ class BulkPaletteWorker(QThread):
 
             rgba = np.array(img, dtype=np.uint8)
 
+            # Quantize RGB like palette_creator: grayscale/palette expects quantized base
+            alpha_channel = rgba[:, :, 3]
+            pil_rgb = Image.fromarray(rgba[:, :, :3], mode="RGB")
+            quant_method = cfg.get(cfg.ci_default_quant_method)
+            quantized_pil = quantize_image(pil_rgb, quant_method)
+            quantized_rgb = np.array(quantized_pil.convert("RGB"))
+            rgba = np.dstack([quantized_rgb, alpha_channel]).astype(np.uint8)
+
             palette_size = int(cfg.get(cfg.ci_default_palette_size))
             palette_height = int(cfg.get(cfg.ci_palette_row_height))
 
-            # Auto-create islands (headless) and then generate grayscale + palette matching palette_creator.generate_both
-            islands, mask_stack, _overflow = auto_create_islands_from_rgba(rgba, palette_size)
+            # Decide between auto islands vs single island
+            auto_islands = bool(cfg.get(cfg.ci_bulk_auto_islands)) if hasattr(cfg, "ci_bulk_auto_islands") else True
+            if auto_islands:
+                # Auto-create islands (headless)
+                islands, mask_stack, _overflow = auto_create_islands_from_rgba(rgba, palette_size)
+            else:
+                # Single island covering all opaque pixels using full palette range
+                h, w = rgba.shape[:2]
+                islands = [("Island_1", 0, max(0, palette_size - 1))]
+                mask = (rgba[:, :, 3] > 0)
+                mask_stack = mask.reshape(1, h, w)
 
-            grayscale_np, palette_img, mask_stack_out = build_grayscale_and_palette_from_islands(
+            grayscale_np, palette_img, mask_stack_out, updated_islands = build_grayscale_and_palette_from_islands(
                 rgba,
                 islands,
                 mask_stack,
@@ -151,8 +169,8 @@ class BulkPaletteWorker(QThread):
             save_image(grey_img, grey_path)
             save_image(palette_img, palette_path, True)
 
-            # Save NPZ state like palette_creator auto-save
-            save_islands_npz(path, islands, mask_stack_out, rgba.shape[1], rgba.shape[0])
+            # Save NPZ state like palette_creator auto-save (use updated ranges if auto-balanced)
+            save_islands_npz(path, updated_islands, mask_stack_out, rgba.shape[1], rgba.shape[0])
 
             return True, None
         
@@ -263,9 +281,17 @@ class BulkPaletteGeneratorWidget(BaseWidget):
             configItem=cfg.ci_include_subdirs,
         )
 
+        self.auto_islands_switch = SwitchSettingCard(
+            icon=CustomIcons.PALETTE.icon(stroke=False) if hasattr(CustomIcons, 'PALETTE') else FIF.PALETTE,
+            title=self.tr("Auto-generate Islands"),
+            content=self.tr("When enabled, islands are created automatically. When disabled, a single full-size island is used for all opaque pixels."),
+            configItem=cfg.ci_bulk_auto_islands,
+        )
+
         # Add to layout
         self.addToFrame(self.src_card)
         self.addToFrame(self.subdirs_switch)
+        self.addToFrame(self.auto_islands_switch)
         self.addToFrame(self.out_card)
         self.addToFrame(self.include_card)
         self.addToFrame(self.exclude_card)

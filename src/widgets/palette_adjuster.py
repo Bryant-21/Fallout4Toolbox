@@ -383,6 +383,13 @@ class PaletteAdjuster(BaseWidget):
         # Ensure a default greyscale is available for preview if user doesn't pick one
         self._ensure_default_greyscale_loaded()
 
+        # Editing is disabled until a row is explicitly selected
+        self._row_selected = False
+        self._update_edit_enabled()
+
+        # Buffer of the selected logical row block being edited
+        self._working_row: Optional[np.ndarray] = None
+
         self._update_color_buttons()
 
     # ---------- File pickers ----------
@@ -397,7 +404,9 @@ class PaletteAdjuster(BaseWidget):
             self.palette_array = np.array(self.palette_img, dtype=np.uint8)
             self.original_array = self.palette_array.copy()
             h, w = self.palette_array.shape[:2]
-            self._set_row_range_and_value(max(1, h), 1)
+            # Slider counts logical rows as blocks of height row_height
+            max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+            self._set_row_range_and_value(max_blocks, 1)
             self.palette_path = path
             self.palette_card.setContent(f"{os.path.basename(path)} | {w}x{h}")
             self.canvas.set_image(self.palette_array)
@@ -446,13 +455,28 @@ class PaletteAdjuster(BaseWidget):
         self.canvas.clear_selection()
         self._refresh_canvas_row_view()
         self.update_preview()
+        # Changing the row clears selection; disable edits again until user selects
+        self._row_selected = False
+        # Clear working buffer tied to previous row
+        self._working_row = None
+        self._update_edit_enabled()
 
     def on_select_row(self):
         if self.palette_array is None:
             return
         if self.canvas.image_array() is None:
             return
-        self.canvas.select_row(0, self.canvas.image_array().shape[0])
+        # Extract the current logical row block from the palette into a working buffer
+        h = self.palette_array.shape[0]
+        max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+        sel_row = self._get_row_value(max_row=max_blocks)
+        row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+        row_end = min(h, row_base + max(1, self.row_height))
+        self._working_row = self.palette_array[row_base:row_end, :, :].copy()
+        # Refresh canvas to show working row tiled
+        self._refresh_canvas_row_view()
+        self._row_selected = True
+        self._update_edit_enabled()
 
     # ---------- Adjustment handling ----------
     def on_adjustments_changed(self, *_args):
@@ -463,23 +487,22 @@ class PaletteAdjuster(BaseWidget):
         self.adjust_state.contrast = int(self.contrast_cfg.value)
 
     def apply_preview_adjustment(self):
-        if self.palette_array is None:
+        if self._working_row is None:
             return
-        adjusted = self._apply_adjustment(self.palette_array, preview_only=True)
-        if adjusted is not None:
-            row_preview = self._extract_row_slice(adjusted)
-            self.canvas.set_adjusted_preview(self._build_row_display_from_array(row_preview))
-            self.update_preview(adjusted)
+        adjusted_row = self._apply_adjustment_to_array(self._working_row)
+        if adjusted_row is not None:
+            self.canvas.set_adjusted_preview(self._build_row_display_from_array(adjusted_row))
+            # Use adjusted row as the palette for greyscale preview
+            self.update_preview(adjusted_row)
 
     def commit_adjustment(self):
-        if self.palette_array is None:
+        if self._working_row is None:
             return
-        adjusted = self._apply_adjustment(self.palette_array, preview_only=False)
-        if adjusted is not None:
-            self.palette_array = adjusted
-            self.palette_img = Image.fromarray(self.palette_array, mode="RGBA" if self.palette_array.shape[2] == 4 else "RGB")
+        adjusted_row = self._apply_adjustment_to_array(self._working_row)
+        if adjusted_row is not None:
+            self._working_row = adjusted_row
             self._refresh_canvas_row_view()
-            self.update_preview()
+            self.update_preview(self._working_row)
 
     def _apply_adjustment(self, src: np.ndarray, preview_only: bool) -> Optional[np.ndarray]:
         if src is None:
@@ -494,16 +517,7 @@ class PaletteAdjuster(BaseWidget):
                 )
             return None
 
-        palette_mask = self._build_palette_mask_from_canvas_selection() if self.apply_selection_only.isChecked() else None
-        if not self.apply_selection_only.isChecked():
-            palette_mask = np.ones(src.shape[:2], dtype=bool)
-        elif palette_mask is None:
-            # Default to current row
-            row_idx = self._get_row_value(max_row=src.shape[0]) - 1
-            row_end = min(src.shape[0], row_idx + self.row_height)
-            palette_mask = np.zeros(src.shape[:2], dtype=bool)
-            palette_mask[row_idx:row_end, :] = True
-
+        # Legacy method; now when used we apply to the entire input src
         adj = src.copy()
         try:
             rgb = adj[:, :, :3].astype(np.float32)
@@ -527,11 +541,7 @@ class PaletteAdjuster(BaseWidget):
             b_add = self.adjust_state.brightness * 255.0 / 100.0
             rgb_new = np.clip((rgb_new - 127.5) * c_scale + 127.5 + b_add, 0, 255)
 
-            # Blend only on masked area
-            rgb_out = rgb.copy()
-            rgb_out[palette_mask] = rgb_new[palette_mask]
-
-            adj[:, :, :3] = rgb_out.astype(np.uint8)
+            adj[:, :, :3] = np.clip(rgb_new, 0, 255).astype(np.uint8)
             return adj
         except Exception:
             logger.exception("Failed to apply adjustments")
@@ -542,6 +552,32 @@ class PaletteAdjuster(BaseWidget):
                     duration=3000,
                     parent=self,
                 )
+            return None
+
+    def _apply_adjustment_to_array(self, arr: np.ndarray) -> Optional[np.ndarray]:
+        """Apply HSV/brightness/contrast directly to a small array (working row)."""
+        if arr is None or arr.size == 0:
+            return None
+        if cv2 is None:
+            return None
+        try:
+            out = arr.copy()
+            rgb = out[:, :, :3].astype(np.float32)
+            hsv = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+            h_shift = self.adjust_state.hue / 2.0
+            hsv[:, :, 0] = (hsv[:, :, 0] + h_shift) % 180
+            s_scale = 1.0 + self.adjust_state.saturation / 100.0
+            v_scale = 1.0 + self.adjust_state.value / 100.0
+            hsv[:, :, 1] = np.clip(hsv[:, :, 1] * s_scale, 0, 255)
+            hsv[:, :, 2] = np.clip(hsv[:, :, 2] * v_scale, 0, 255)
+            rgb_new = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
+            c_scale = 1.0 + self.adjust_state.contrast / 100.0
+            b_add = self.adjust_state.brightness * 255.0 / 100.0
+            rgb_new = np.clip((rgb_new - 127.5) * c_scale + 127.5 + b_add, 0, 255)
+            out[:, :, :3] = rgb_new.astype(np.uint8)
+            return out
+        except Exception:
+            logger.exception("Failed to apply adjustments to working row")
             return None
 
     # ---------- Gradient / Fill ----------
@@ -555,20 +591,23 @@ class PaletteAdjuster(BaseWidget):
             self._update_color_buttons()
 
     def apply_gradient(self, horizontal: bool):
-        if self.palette_array is None:
+        if self._working_row is None:
             return
-        mask = self.canvas.selection_mask()
+        mask_view = self.canvas.selection_mask()
         apply_selection = self.apply_selection_only.isChecked()
-        if mask is None or not mask.any() or not apply_selection:
-            mask = np.ones(self.palette_array.shape[:2], dtype=bool)
+        if mask_view is None or not mask_view.any() or not apply_selection:
+            col_mask = np.ones(self._working_row.shape[1], dtype=bool)
+        else:
+            col_mask = mask_view.any(axis=0)
 
-        y_idx, x_idx = np.nonzero(mask)
-        if y_idx.size == 0:
+        # Bounds across working row using column mask
+        x_indices = np.where(col_mask)[0]
+        if x_indices.size == 0:
             return
-        y0, y1 = y_idx.min(), y_idx.max()
-        x0, x1 = x_idx.min(), x_idx.max()
+        x0, x1 = int(x_indices.min()), int(x_indices.max())
+        y0, y1 = 0, self._working_row.shape[0] - 1
 
-        arr = self.palette_array.copy()
+        arr = self._working_row.copy()
         start = np.array([self.start_color.red(), self.start_color.green(), self.start_color.blue()], dtype=np.float32)
         end = np.array([self.end_color.red(), self.end_color.green(), self.end_color.blue()], dtype=np.float32)
 
@@ -577,37 +616,38 @@ class PaletteAdjuster(BaseWidget):
             ramp = (np.arange(x0, x1 + 1) - x0) / span
             grad = start[None, :] * (1.0 - ramp[:, None]) + end[None, :] * ramp[:, None]
             for xi in range(x0, x1 + 1):
-                arr[y0:y1 + 1, xi, :3][mask[y0:y1 + 1, xi]] = np.clip(grad[xi - x0], 0, 255).astype(np.uint8)
+                if col_mask[xi]:
+                    arr[y0:y1 + 1, xi, :3] = np.clip(grad[xi - x0], 0, 255).astype(np.uint8)
         else:
             span = max(1, y1 - y0)
             ramp = (np.arange(y0, y1 + 1) - y0) / span
             grad = start[None, :] * (1.0 - ramp[:, None]) + end[None, :] * ramp[:, None]
             for yi in range(y0, y1 + 1):
-                arr[yi, x0:x1 + 1, :3][mask[yi, x0:x1 + 1]] = np.clip(grad[yi - y0], 0, 255).astype(np.uint8)
+                arr[yi, x0:x1 + 1, :3][col_mask[x0:x1 + 1]] = np.clip(grad[yi - y0], 0, 255).astype(np.uint8)
 
-        self.palette_array = arr
-        self.palette_img = Image.fromarray(arr, mode="RGBA" if arr.shape[2] == 4 else "RGB")
+        self._working_row = arr
         self._refresh_canvas_row_view()
-        self.update_preview()
+        self.update_preview(self._working_row)
 
     def apply_fill(self):
-        if self.palette_array is None:
+        if self._working_row is None:
             return
-        mask = self.canvas.selection_mask()
+        mask_view = self.canvas.selection_mask()
         apply_selection = self.apply_selection_only.isChecked()
-        if mask is None or not mask.any() or not apply_selection:
-            mask = np.ones(self.palette_array.shape[:2], dtype=bool)
+        if mask_view is None or not mask_view.any() or not apply_selection:
+            col_mask = np.ones(self._working_row.shape[1], dtype=bool)
+        else:
+            col_mask = mask_view.any(axis=0)
 
         color = self.start_color
-        arr = self.palette_array.copy()
-        arr[mask, 0] = color.red()
-        arr[mask, 1] = color.green()
-        arr[mask, 2] = color.blue()
+        arr = self._working_row.copy()
+        arr[:, col_mask, 0] = color.red()
+        arr[:, col_mask, 1] = color.green()
+        arr[:, col_mask, 2] = color.blue()
 
-        self.palette_array = arr
-        self.palette_img = Image.fromarray(arr, mode="RGBA" if arr.shape[2] == 4 else "RGB")
+        self._working_row = arr
         self._refresh_canvas_row_view()
-        self.update_preview()
+        self.update_preview(self._working_row)
 
     # ---------- Palette operations ----------
     def reload_palette(self):
@@ -618,8 +658,13 @@ class PaletteAdjuster(BaseWidget):
             self.palette_img = img.convert("RGBA")
             self.palette_array = np.array(self.palette_img, dtype=np.uint8)
             self.original_array = self.palette_array.copy()
+            # Clear working row on reload
+            self._working_row = None
+            self._row_selected = False
+            self._update_edit_enabled()
             h, w = self.palette_array.shape[:2]
-            self._set_row_range_and_value(max(1, h), max(1, min(self._get_row_value(), h)))
+            max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+            self._set_row_range_and_value(max_blocks, max(1, min(self._get_row_value(), max_blocks)))
             self._refresh_canvas_row_view()
             self.update_preview()
         except Exception:
@@ -630,19 +675,37 @@ class PaletteAdjuster(BaseWidget):
             return
         self.palette_array = self.original_array.copy()
         self.palette_img = Image.fromarray(self.palette_array, mode="RGBA" if self.palette_array.shape[2] == 4 else "RGB")
+        self._working_row = None
+        self._row_selected = False
+        self._update_edit_enabled()
         self._refresh_canvas_row_view()
         self.update_preview()
 
     def append_row_to_palette(self):
         if self.palette_array is None or self.palette_path is None:
             return
+        if self._working_row is None:
+            InfoBar.warning(
+                title=self.tr("No Row Selected"),
+                content=self.tr("Select a row first, then edit before appending."),
+                duration=3000,
+                parent=self,
+            )
+            return
         h, w, c = self.palette_array.shape
-        sel_row = self._get_row_value(max_row=h)
-        row_idx = sel_row - 1
+        # Work with logical row blocks (row_height tall)
+        max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+        sel_row = self._get_row_value(max_row=max_blocks)
+        row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+        row_end = min(h, row_base + max(1, self.row_height))
         try:
-            # Build new block from selected row (repeat row_height)
-            row_data = self.palette_array[row_idx:row_idx + 1, :, :3]
-            new_block = np.repeat(row_data, self.row_height, axis=0)
+            # Build new block from the working row (repeat to configured row_height if needed)
+            row_data = self._working_row[:, :, :3]
+            if row_data.shape[0] < self.row_height:
+                reps = math.ceil(self.row_height / max(1, row_data.shape[0]))
+                new_block = np.repeat(row_data, reps, axis=0)[:self.row_height]
+            else:
+                new_block = row_data
 
             pal_arr = self.palette_array
             if pal_arr.shape[2] == 3:
@@ -660,7 +723,14 @@ class PaletteAdjuster(BaseWidget):
             self.palette_img = new_img
             self.palette_array = np.array(new_img, dtype=np.uint8)
             self.original_array = self.palette_array.copy()
-            self._set_row_range_and_value(max(1, self.palette_array.shape[0]), sel_row)
+            # Update slider to new block count, keep current selection
+            new_h = self.palette_array.shape[0]
+            new_blocks = max(1, math.ceil(new_h / max(1, self.row_height)))
+            self._set_row_range_and_value(new_blocks, max(1, min(sel_row, new_blocks)))
+            # Clear working row; require reselect for next edit
+            self._working_row = None
+            self._row_selected = False
+            self._update_edit_enabled()
             self._refresh_canvas_row_view()
             self.update_preview()
             InfoBar.success(
@@ -699,14 +769,16 @@ class PaletteAdjuster(BaseWidget):
         try:
             palette_img = self.palette_img
             if preview_palette is not None:
-                # Respect alpha if present, but palette rows only use RGB
+                # Build a temporary palette from the provided row/block
                 mode = "RGBA" if preview_palette.shape[2] == 4 else "RGB"
                 palette_img = Image.fromarray(preview_palette[:, :, :3], mode=mode)
 
-            # Determine which palette row to sample (1-based UI -> 0-based index)
+            # Determine which palette row block to sample (1-based UI)
             h = palette_img.size[1]
-            sel_row = self._get_row_value(max_row=h)
-            row_y = max(0, min(h - 1, sel_row - 1))
+            max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+            sel_row = self._get_row_value(max_row=max_blocks)
+            row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+            row_y = max(0, min(h - 1, row_base))
             palette_row = get_palette_row(palette_img, y=row_y)
 
             colored = apply_palette_to_greyscale(palette_img, self.greyscale_img, palette_row)
@@ -738,13 +810,19 @@ class PaletteAdjuster(BaseWidget):
         if self.palette_array is None:
             return
         h = self.palette_array.shape[0]
-        sel_row = self._get_row_value(max_row=h)
-        row_idx = sel_row - 1
+        max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+        sel_row = self._get_row_value(max_row=max_blocks)
+        row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+        row_end = min(h, row_base + max(1, self.row_height))
         self._updating_row_card = True
         self.row_card.setValue(sel_row)
         self._updating_row_card = False
-        row_slice = self.palette_array[row_idx: min(h, row_idx + self.row_height), :, :]
-        display = self._build_row_display_from_array(row_slice)
+        # If we have a working row buffer, display it; otherwise show the slice from palette
+        if self._working_row is not None and self._working_row.size != 0:
+            display = self._build_row_display_from_array(self._working_row)
+        else:
+            row_slice = self.palette_array[row_base: row_end, :, :]
+            display = self._build_row_display_from_array(row_slice)
         self.canvas.set_image(display)
 
     def _build_row_display_from_array(self, arr: np.ndarray) -> np.ndarray:
@@ -760,9 +838,11 @@ class PaletteAdjuster(BaseWidget):
         if array is None or array.size == 0:
             return array
         h = array.shape[0]
-        sel_row = self._get_row_value(max_row=h)
-        row_idx = max(0, min(h - 1, sel_row - 1))
-        return array[row_idx: row_idx + 1, :, :]
+        max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+        sel_row = self._get_row_value(max_row=max_blocks)
+        row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+        row_end = min(h, row_base + max(1, self.row_height))
+        return array[row_base: row_end, :, :]
 
     def _build_palette_mask_from_canvas_selection(self) -> Optional[np.ndarray]:
         if self.palette_array is None:
@@ -774,11 +854,12 @@ class PaletteAdjuster(BaseWidget):
         if not col_mask.any():
             return None
         h, w = self.palette_array.shape[:2]
-        sel_row = self._get_row_value(max_row=h)
-        row_idx = sel_row - 1
-        row_end = min(h, row_idx + self.row_height)
+        max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+        sel_row = self._get_row_value(max_row=max_blocks)
+        row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+        row_end = min(h, row_base + max(1, self.row_height))
         palette_mask = np.zeros((h, w), dtype=bool)
-        palette_mask[row_idx:row_end, :] = col_mask[None, :]
+        palette_mask[row_base:row_end, :] = col_mask[None, :]
         return palette_mask
 
     # ---------- Row helpers ----------
@@ -816,6 +897,31 @@ class PaletteAdjuster(BaseWidget):
         self.gradient_h_btn.setStyleSheet(grad_css + " color: #fff;")
         self.gradient_v_btn.setStyleSheet(grad_css + " color: #fff;")
         self.fill_btn.setStyleSheet(start_css + f" color: {text_start};")
+
+    # ---------- Enable/disable editing until row is selected ----------
+    def _update_edit_enabled(self):
+        enabled = bool(getattr(self, "_row_selected", False))
+        # Range cards and buttons
+        for w in (
+            self.hue_card,
+            self.sat_card,
+            self.val_card,
+            self.brightness_card,
+            self.contrast_card,
+            self.preview_btn,
+            self.apply_btn,
+            self.apply_selection_only,
+            self.pick_start_btn,
+            self.pick_end_btn,
+            self.gradient_h_btn,
+            self.gradient_v_btn,
+            self.fill_btn,
+            self.add_row_btn,
+        ):
+            try:
+                w.setEnabled(enabled)
+            except Exception:
+                pass
 
 
 # Fallback import for cv2 if missing at module import time

@@ -17,6 +17,7 @@ from src.utils.logging_utils import logger
 from src.utils.palette_utils import (
     apply_palette_to_greyscale,
     build_palette_row_from_recolor,
+    postprocess_palette_row,
     load_island_npz,
 )
 
@@ -285,6 +286,15 @@ class AddToPaletteWidget(BaseWidget):
                 self.islands,
                 self.mask_stack,
                 self.palette_size,
+            )
+            # Post-process to match creator pipeline (guard bands + smoothing)
+            row = postprocess_palette_row(
+                row,
+                self.islands,
+                # Use defaults from config; allow future UI to pass overrides
+                guard_band_width=None,
+                smoothing=None,
+                smoothing_strength=None,
             )
             self.palette_row = row
             self._set_row_preview(row)

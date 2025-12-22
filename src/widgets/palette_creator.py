@@ -1035,8 +1035,9 @@ class PaletteLUTGenerator(BaseWidget):
         self.card_uv_set.combox.setCurrentIndex(0)
         self.selected_uv_index = 0
 
-        # If an opaque image was pending, try to apply the mask now
-        if self.pending_image_path or (self._base_image_array is not None and self.image_path is None):
+        # UV basis changed: clear selections and (re)apply mask if we have a base image
+        self._reset_islands_and_masks()
+        if self.pending_image_path or (self._base_image_array is not None):
             self._apply_nif_mask_and_load()
 
     def on_uv_changed(self, idx: int):
@@ -1044,7 +1045,7 @@ class PaletteLUTGenerator(BaseWidget):
         # Clear all islands and masks when UV selection changes
         self._reset_islands_and_masks()
         # Reapply nif mask if we have a pending/opaque base
-        if self.image_path is None and (self.pending_image_path or self._base_image_array is not None):
+        if self.pending_image_path or (self._base_image_array is not None):
             self._apply_nif_mask_and_load()
 
     def _apply_nif_mask_and_load(self):
@@ -1353,8 +1354,24 @@ class PaletteLUTGenerator(BaseWidget):
         labels, num = ndimage.label(non_transparent, structure=structure)
         slices = ndimage.find_objects(labels)
 
-        hist_weight = 0.75
+        # User sensitivity (0..1). Values above 100 in settings cap at 1.0
         dist_threshold = (cfg.get(cfg.ci_grouping_threshold) / 100.0)
+        sens = float(max(0.0, min(1.0, dist_threshold)))
+
+        # Weight proportions less at low sensitivity ("percentages don't matter")
+        hist_weight = 0.3 + 0.4 * sens  # 0.3 at min, 0.7 at max
+
+        # Dominant-color presence rule parameters scale with sensitivity
+        # - Radius in Lab around the reference dominant bin increases with sensitivity
+        # - Minimal presence required in candidate decreases with sensitivity
+        ref_top_bin = int(ref_hist.argmax())
+        ref_top_center = self._lab_bin_center(ref_top_bin)
+        dom_radius = 10.0 + 30.0 * sens     # ~10 at min (very close), ~40 at max (captures the color family)
+        dom_presence_min = max(0.0, 0.20 - 0.20 * sens)  # 0.20 at min, 0.0 at max
+
+        # Precompute centers of all 512 bins once for faster inner-loop checks
+        all_centers = np.stack([self._lab_bin_center(i) for i in range(512)], axis=0)
+        dom_mask_bins = (np.linalg.norm(all_centers - ref_top_center, axis=1) <= dom_radius)
 
         added_pixels = 0
 
@@ -1380,11 +1397,28 @@ class PaletteLUTGenerator(BaseWidget):
             hist = self._lab_histogram(region_lab)
             mean_lab = region_lab.mean(axis=0)
 
+            # Dominant color family presence in this region
+            frac_dom = float(hist[dom_mask_bins].sum())
+
+            # Compute similarity score (proportions + perceptual mean)
             d_hist = self._histogram_intersection_distance(hist, ref_hist)
             d_mean = self._mean_lab_distance(mean_lab, ref_mean_lab)
             score = hist_weight * d_hist + (1.0 - hist_weight) * d_mean
 
-            if score <= dist_threshold and self._dominant_bin_guard(hist, ref_hist):
+            accept = False
+
+            # High sensitivity: accept any region that contains any of the dominant color family
+            if sens >= 0.95 and frac_dom > 0.0:
+                accept = True
+            # Medium sensitivity: require small but non-trivial presence of dominant color
+            elif sens >= 0.5 and frac_dom >= max(0.02, dom_presence_min):
+                accept = True
+            else:
+                # Low sensitivity: rely on stricter similarity plus dominant-bin compatibility
+                if score <= (0.10 + 0.65 * sens) and self._dominant_bin_guard(hist, ref_hist):
+                    accept = True
+
+            if accept:
                 # Accept this region into the current island, counting only newly added pixels
                 if current_island not in self.canvas.all_masks:
                     self.canvas.all_masks[current_island] = np.zeros(non_transparent.shape, dtype=bool)
@@ -1654,13 +1688,25 @@ class PaletteLUTGenerator(BaseWidget):
 
             mask_stack_arr = np.stack(mask_stack, axis=0) if mask_stack else np.zeros((0, height, width), dtype=bool)
 
-            grayscale_np, palette_img, mask_stack_out = build_grayscale_and_palette_from_islands(
+            grayscale_np, palette_img, mask_stack_out, updated_islands = build_grayscale_and_palette_from_islands(
                 self.canvas.original_image,
                 islands,
                 mask_stack_arr,
                 palette_size,
                 palette_height,
             )
+
+            # If auto-balance adjusted ranges, reflect in local and UI state
+            if updated_islands != islands:
+                islands = list(updated_islands)
+                # Update self.islands ranges preserving names/order
+                name_to_range = {name: (gs, ge) for name, gs, ge in islands}
+                self.islands = [(name, *name_to_range.get(name, (gs, ge))) for (name, gs, ge) in self.islands]
+                # Refresh list widget labels
+                self.island_list.clear()
+                for name, gs, ge in self.islands:
+                    self.island_list.addItem(f"{name} [{gs}-{ge}] ({ge - gs + 1} colors)")
+                self.update_available_space()
 
             # Update stored masks with any changes from helper (e.g., merged leftovers)
             for (name, _, _), m in zip(islands, mask_stack_out):

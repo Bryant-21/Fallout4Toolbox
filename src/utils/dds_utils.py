@@ -1,5 +1,4 @@
 import os
-import os
 import subprocess
 from pathlib import Path
 
@@ -7,7 +6,6 @@ from PIL import Image
 
 from src.utils.appconfig import TEXCONV_EXE
 from src.utils.logging_utils import logger
-
 
 
 def load_image(path, f='RGBA'):
@@ -106,7 +104,7 @@ def convert_to_dds(input_path, output_path, is_palette=False, generate_mips=Fals
             # Use provided palette dimensions
             cmd = [
                 TEXCONV_EXE,
-                '-f', 'BC1_UNORM',
+                '-f', 'R8G8B8A8_UNORM',
                 '-y',
                 '-m', '7',
                 input_path,

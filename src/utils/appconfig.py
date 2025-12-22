@@ -110,7 +110,7 @@ class Config(QConfig):
     ci_quantize_dither_enable = ConfigItem("palette", "quantize_dither_enable", False, BoolValidator())
     # Palette filtering type: "linear" interpolates colors smoothly, "nearest" preserves exact colors
     ci_palette_filter_type = OptionsConfigItem("palette", "palette_filter_type", "linear",
-                                                OptionsValidator(["linear", "nearest", "cubic", "gaussian", "cubic_gaussian"]))
+                                                OptionsValidator(["linear", "nearest", "cubic", "gaussian", "cubic_gaussian", "anchored_linear"]))
 
     # Auto preview: after generating grayscale & palette, switch to Palette Preview and load outputs
     ci_auto_preview = ConfigItem("palette", "auto_preview", True, BoolValidator())
@@ -122,6 +122,18 @@ class Config(QConfig):
         "mask",
         OptionsValidator(["mask", "nearest_fill", "premultiply_snap", "none"])
     )
+
+    # Optional: Pre-quantize each island's colors to the island size before grayscale/palette
+    # If enabled and an island has more unique colors than available indices, we quantize only the
+    # island's masked RGB to the island size, then re-apply the mask and continue as normal.
+    ci_island_prequant_enable = ConfigItem("palette", "island_prequant_enable", False, BoolValidator())
+
+    # Optional: Auto-balance island sizes before quantization
+    # If enabled, we will shift palette index boundaries between neighboring islands so that
+    # under-utilized islands (fewer unique colors than slots) donate slots to overfull islands
+    # (more unique colors than slots). This keeps total coverage and ordering while improving
+    # fit of colors to available indices. Runs before island pre-quantization.
+    ci_island_autobalance_enable = ConfigItem("palette", "island_autobalance_enable", False, BoolValidator())
 
     # Greyscale mapping strategy
     ci_greyscale_mapping_strategy = OptionsConfigItem(
@@ -135,7 +147,10 @@ class Config(QConfig):
             "color_clustering",  # Hue-based color clustering
             "perceptual",  # CIE Lab L* perceptual brightness
             "reverse_luminosity",  # Inverted brightness mapping
-            "alternating_luminosity"  # Alternating direction per island
+            "alternating_luminosity",  # Alternating direction per island
+            "smoothed_quantile",  # Quantile via smoothed ECDF (histogram blur)
+            "tempered_quantile",  # Blend quantile with linear
+            "spline_quantile"  # Monotone spline through anchor quantiles
         ]))
     
     # Guard band width for boundary protection (0-2)
@@ -151,6 +166,55 @@ class Config(QConfig):
             "bilateral"  # Bilateral: edge-preserving smoothing (best quality, slower)
         ]))
     ci_palette_smooth_strength = RangeConfigItem("palette", "palette_smooth_strength", 30, RangeValidator(0, 100))
+
+    # Preserve observed palette indices (anchor protection)
+    ci_preserve_observed_palette_indices = ConfigItem("palette", "preserve_observed_palette_indices", True, BoolValidator())
+
+    # Robust per-bin aggregation controls
+    ci_palette_anchor_robust_enable = ConfigItem("palette", "anchor_robust_enable", True, BoolValidator())
+    ci_palette_anchor_deltaE_max = RangeConfigItem("palette", "anchor_deltaE_max", 2.0, RangeValidator(0.0, 50.0))
+
+    # Linear mapping anchor-snap controls (to better match quantized colors while staying smooth)
+    ci_linear_anchor_snap_enable = ConfigItem("palette", "linear_anchor_snap_enable", False, BoolValidator())
+    # 0..100 percent; effective snap per color = strength * (1 - d/epsilon)
+    ci_linear_anchor_snap_strength = RangeConfigItem("palette", "linear_anchor_snap_strength", 100, RangeValidator(0, 100))
+    # ΔE (OpenCV Lab space) within which snapping applies; 0 means exact matches only
+    ci_linear_anchor_snap_epsilon = RangeConfigItem("palette", "linear_anchor_snap_epsilon", 2.0, RangeValidator(0.0, 50.0))
+
+    # Smoothed-quantile parameters
+    ci_smoothed_quantile_bins = RangeConfigItem("palette", "smoothed_quantile_bins", 256, RangeValidator(16, 2048))
+    # Sigma in histogram-bin units (stored as float)
+    ci_smoothed_quantile_sigma = RangeConfigItem("palette", "smoothed_quantile_sigma", 1.5, RangeValidator(0.1, 10.0))
+    # Blend toward linear (0..100) interpreted as 0..1 in code
+    ci_smoothed_quantile_alpha = RangeConfigItem("palette", "smoothed_quantile_alpha", 30, RangeValidator(0, 100))
+
+    # Bulk palette generator: auto-generate multiple islands vs. single full-size island
+    # When False, a single island spanning the full palette range is created for all opaque pixels.
+    ci_bulk_auto_islands = ConfigItem("bulk_palette", "auto_islands", True, BoolValidator())
+
+    # Tempered-quantile parameter: blend toward linear (0..100)
+    ci_tempered_quantile_alpha = RangeConfigItem("palette", "tempered_quantile_alpha", 30, RangeValidator(0, 100))
+
+    # Spline-quantile parameters
+    ci_spline_profile = OptionsConfigItem(
+        "palette", "spline_profile", "even",
+        OptionsValidator(["even", "compressed_ends", "expanded_ends"]))
+    # Gamma shaping for profile (0.2..3.0); 1.0 = linear
+    ci_spline_gamma = RangeConfigItem("palette", "spline_gamma", 1.0, RangeValidator(0.2, 3.0))
+
+    # Optional: Greyscale collision resolver (stochastic tone-curve search)
+    # Applies small, monotone remapping within each island's allowed grey range to reduce index collisions.
+    ci_enable_collision_resolver = ConfigItem("palette", "enable_collision_resolver", False, BoolValidator())
+    ci_collision_resolver_tries = RangeConfigItem("palette", "collision_resolver_tries", 15, RangeValidator(1, 100))
+    ci_collision_resolver_per_island = ConfigItem("palette", "collision_resolver_per_island", True, BoolValidator())
+    # Strategy for resolver: choose how we search improvements
+    ci_collision_resolver_strategy = OptionsConfigItem(
+        "palette", "collision_resolver_strategy", "gray_curve",
+        OptionsValidator(["gray_curve", "per_channel_gamma", "rgb_weight_mix", "hybrid"]))
+    # Naturalness penalty weight (0.0..1.0) — higher keeps closer to baseline, lower allows more variation
+    ci_collision_resolver_naturalness_w = RangeConfigItem("palette", "collision_resolver_naturalness_w", 0.10, RangeValidator(0.0, 1.0))
+    # Collision-count weight: adds coll_w * total_collisions to objective (0..10)
+    ci_collision_resolver_collision_w = RangeConfigItem("palette", "collision_resolver_collision_w", 1.0, RangeValidator(0.0, 10.0))
 
     #theme
     themeColor = ColorConfigItem("QFluentWidgets", "ThemeColor", '#ffa11d', restart=True)
