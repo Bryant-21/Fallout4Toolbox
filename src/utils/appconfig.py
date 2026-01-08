@@ -199,22 +199,7 @@ class Config(QConfig):
     ci_spline_profile = OptionsConfigItem(
         "palette", "spline_profile", "even",
         OptionsValidator(["even", "compressed_ends", "expanded_ends"]))
-    # Gamma shaping for profile (0.2..3.0); 1.0 = linear
     ci_spline_gamma = RangeConfigItem("palette", "spline_gamma", 1.0, RangeValidator(0.2, 3.0))
-
-    # Optional: Greyscale collision resolver (stochastic tone-curve search)
-    # Applies small, monotone remapping within each island's allowed grey range to reduce index collisions.
-    ci_enable_collision_resolver = ConfigItem("palette", "enable_collision_resolver", False, BoolValidator())
-    ci_collision_resolver_tries = RangeConfigItem("palette", "collision_resolver_tries", 15, RangeValidator(1, 100))
-    ci_collision_resolver_per_island = ConfigItem("palette", "collision_resolver_per_island", True, BoolValidator())
-    # Strategy for resolver: choose how we search improvements
-    ci_collision_resolver_strategy = OptionsConfigItem(
-        "palette", "collision_resolver_strategy", "gray_curve",
-        OptionsValidator(["gray_curve", "per_channel_gamma", "rgb_weight_mix", "hybrid"]))
-    # Naturalness penalty weight (0.0..1.0) — higher keeps closer to baseline, lower allows more variation
-    ci_collision_resolver_naturalness_w = RangeConfigItem("palette", "collision_resolver_naturalness_w", 0.10, RangeValidator(0.0, 1.0))
-    # Collision-count weight: adds coll_w * total_collisions to objective (0..10)
-    ci_collision_resolver_collision_w = RangeConfigItem("palette", "collision_resolver_collision_w", 1.0, RangeValidator(0.0, 10.0))
 
     #theme
     themeColor = ColorConfigItem("QFluentWidgets", "ThemeColor", '#ffa11d', restart=True)

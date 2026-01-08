@@ -2145,30 +2145,6 @@ def build_grayscale_and_palette_from_islands(rgba: np.ndarray,
     prequant_enabled = cfg.get(cfg.ci_island_prequant_enable) if hasattr(cfg, "ci_island_prequant_enable") else False
     default_quant_method = cfg.get(cfg.ci_default_quant_method) if hasattr(cfg, "ci_default_quant_method") else QuantAlgorithm.libimagequant
 
-    # Optional: attempt to resolve grayscale collisions via global tone curve adjustments
-    try:
-        resolver_enabled = cfg.get(cfg.ci_enable_collision_resolver) if hasattr(cfg, "ci_enable_collision_resolver") else False
-    except Exception:
-        resolver_enabled = False
-
-    if resolver_enabled and len(active_islands) > 0:
-        try:
-            # Provide uint8 luminosity into resolver; it returns adjusted uint8 luminosity
-            lum_u8 = np.clip(np.rint(luminosity).astype(np.uint8), 0, 255)
-            lum_adj = resolve_grayscale_collisions(
-                lum_u8,
-                active_islands,
-                masks,
-                rgb_array,
-                mapping_strategy,
-                guard_band_width,
-                palette_to_game_scale,
-            )
-            # Use adjusted luminosity for subsequent mapping
-            luminosity = lum_adj.astype(np.float32)
-        except Exception:
-            logger.exception("Collision resolver failed; continuing with baseline luminosity")
-
     for island_index, ((island_name, gray_start, gray_end), mask) in enumerate(zip(active_islands, masks)):
         if mask is None:
             continue
