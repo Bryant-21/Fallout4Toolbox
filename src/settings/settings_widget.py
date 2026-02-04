@@ -11,6 +11,7 @@ class MainSettings(GenericSettings):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('Settings')
+        self.title = 'Settings'
         self.personalGroup = SettingCardGroup(self.tr('Personalization'), self.scroll_widget)
 
         self.themeColorCard = CustomColorSettingCard(

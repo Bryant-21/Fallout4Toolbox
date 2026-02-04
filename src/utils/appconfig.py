@@ -152,6 +152,16 @@ class Config(QConfig):
             "tempered_quantile",  # Blend quantile with linear
             "spline_quantile"  # Monotone spline through anchor quantiles
         ]))
+
+    # Folder Renamer
+    fr_source_folder = ConfigItem("folder_renamer", "source_folder", "")
+    fr_new_folder_name = ConfigItem("folder_renamer", "new_folder_name", "")
+    fr_replacements = ConfigItem("folder_renamer", "replacements", "")
+
+    # Modlist Merger
+    mm_master_profile = ConfigItem("modlist_merger", "master_profile", "")
+    mm_secondary_profile = ConfigItem("modlist_merger", "secondary_profile", "")
+    mm_output_folder = ConfigItem("modlist_merger", "output_folder", "")
     
     # Guard band width for boundary protection (0-2)
     ci_guard_band_width = RangeConfigItem("palette", "guard_band_width", 1, RangeValidator(0, 2))
@@ -242,6 +252,19 @@ class Config(QConfig):
     data_root_cfg = ConfigItem("nif", "data_root", "")
     last_open_nif = ConfigItem("nif", "last_open_nif", "")
     do_ai_upscale = ConfigItem("nif", "ai_upscaler", False, BoolValidator())
+
+    #Gun Fire Generator
+    gf_input_file = ConfigItem("gun_fire", "input_file", "")
+    gf_rpms = ConfigItem("gun_fire", "rpms", "300, 450, 540, 660, 780, 900")
+    gf_shot_count = RangeConfigItem("gun_fire", "shot_count", 12, RangeValidator(1, 100))
+    gf_tail_threshold = RangeConfigItem("gun_fire", "tail_threshold", -35.0, RangeValidator(-100.0, 0.0))
+    gf_pitch_variation = RangeConfigItem("gun_fire", "pitch_variation", 0.5, RangeValidator(0.0, 5.0))
+    gf_gain_variation = RangeConfigItem("gun_fire", "gain_variation", 2.0, RangeValidator(0.0, 20.0))
+    gf_jitter_ms = RangeConfigItem("gun_fire", "jitter_ms", 8, RangeValidator(0, 100))
+    gf_output_folder = ConfigItem("gun_fire", "output_folder", "")
+    gf_highpass_enabled = ConfigItem("gun_fire", "highpass_enabled", True, BoolValidator())
+    gf_tilt = RangeConfigItem("gun_fire", "tilt", 0.0, RangeValidator(-10.0, 10.0))
+    gf_base_reinforcement = ConfigItem("gun_fire", "base_reinforcement", False, BoolValidator())
     textures_dir_cfg = ConfigItem("nif", "textures_dir", "")
     output_dir_cfg = ConfigItem("nif", "output_dir", "")
     mip_flooding = ConfigItem("nif", "mip_flooding", False, BoolValidator())

@@ -36,31 +36,23 @@ def create_archlist(directory_path, output_file):
     # Get all files in the directory and subdirectories
     all_files = []
 
-    # Check if the directory is named "Data" or contains a "Data" subdirectory
-    data_dir = directory_path
-    if os.path.basename(directory_path) != "Data":
-        potential_data_dir = os.path.join(directory_path, "Data")
-        if os.path.isdir(potential_data_dir):
-            data_dir = potential_data_dir
-
     for root, _, files in os.walk(directory_path):
         for file in files:
+            # Ignore archlist, achlist, esp and ini files
+            if file.lower().endswith(('.archlist', '.achlist', '.esp', '.ini')):
+                continue
+
             # Get the full path of the file
             full_path = os.path.join(root, file)
 
             # Create path in the format "Data\\path\\to\\file"
-            if os.path.basename(data_dir) == "Data":
-                # If we're in a Data directory, make paths relative to it
-                if full_path.startswith(data_dir):
-                    rel_path = os.path.relpath(full_path, os.path.dirname(data_dir))
-                else:
-                    # If file is outside Data directory, skip it
-                    continue
-            else:
-                # If no Data directory found, use the base directory name as the start
-                rel_path = os.path.relpath(full_path, os.path.dirname(directory_path))
-                # Prepend "Data\\" to match the format
-                rel_path = os.path.join("Data", rel_path)
+            # Always assume the folder we are reading is a data folder.
+            # Example: directory_path = ...\B21_GaussMinigun
+            #          full_path = ...\B21_GaussMinigun\Materials\file.ext
+            #          rel_path = Materials\file.ext
+            #          Result = Data\Materials\file.ext
+            rel_path = os.path.relpath(full_path, directory_path)
+            rel_path = os.path.join("Data", rel_path)
 
             # Convert forward slashes to backslashes for Windows style
             rel_path = rel_path.replace('/', '\\')
