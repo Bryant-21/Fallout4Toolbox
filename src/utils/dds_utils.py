@@ -1,5 +1,4 @@
 import os
-import os
 import subprocess
 from pathlib import Path
 
@@ -7,7 +6,6 @@ from PIL import Image
 
 from src.utils.appconfig import TEXCONV_EXE
 from src.utils.logging_utils import logger
-
 
 
 def load_image(path, f='RGBA'):
@@ -88,8 +86,7 @@ def load_image(path, f='RGBA'):
         logger.error(f"Failed to load image '{path}': {e}")
         raise
 
-def convert_to_dds(input_path, output_path, is_palette=False, palette_width=128, palette_height=8,
-                   generate_mips=False, target_format=None):
+def convert_to_dds(input_path, output_path, is_palette=False, generate_mips=False, target_format=None):
     """Convert image to DDS format using texconv.exe.
 
     Notes:
@@ -107,18 +104,16 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=128,
             # Use provided palette dimensions
             cmd = [
                 TEXCONV_EXE,
-                '-f', 'B8G8R8A8_UNORM',
+                '-f', 'R8G8B8A8_UNORM',
                 '-y',
-                '-m', '1',
-                '-w', str(palette_width),
-                '-h', str(palette_height),
+                '-m', '7',
                 input_path,
                 '-o', out_dir
             ]
         else:
             # Determine output format
             out_fmt = target_format or 'BC7_UNORM'
-            cmd = [TEXCONV_EXE, '-f', out_fmt, '-y', '-bc', 'q']
+            cmd = [TEXCONV_EXE, '-f', out_fmt, '-y']
             if not generate_mips:
                 cmd.extend(['-m', '1'])
             cmd.extend([input_path, '-o', out_dir])
@@ -136,12 +131,12 @@ def convert_to_dds(input_path, output_path, is_palette=False, palette_width=128,
         logger.error(f"DDS conversion error: {str(e)}")
         raise Exception(f"DDS conversion error: {str(e)}")
 
-def save_image(img, path, is_palette=False, palette_width=256, palette_height=4):
+def save_image(img, path, is_palette=False):
     if "dds" in path:
         png_path = os.path.splitext(path)[0] + ".png"
         try:
             img.save(png_path)
-            convert_to_dds(png_path, path, is_palette, palette_width, palette_height)
+            convert_to_dds(png_path, path, is_palette)
         finally:
             try:
                 if os.path.exists(png_path):

@@ -1,0 +1,934 @@
+import math
+import os
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
+import numpy as np
+from PIL import Image
+from PySide6.QtCore import Qt, QRect
+from PySide6.QtGui import QImage, QPainter, QPixmap, QColor, QMouseEvent
+from PySide6.QtWidgets import (
+	QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog, QSplitter,
+	QCheckBox, QColorDialog
+)
+from qfluentwidgets import (
+	PushSettingCard, PrimaryPushButton, PushButton, FluentIcon as FIF,
+	RangeSettingCard, RangeConfigItem, RangeValidator, InfoBar
+)
+
+from src.settings.palette_settings import PaletteSettings
+from src.utils.appconfig import cfg
+from src.utils.dds_utils import load_image, save_image
+from src.utils.filesystem_utils import get_app_root
+from src.utils.helpers import BaseWidget
+from src.utils.icons import CustomIcons
+from src.utils.logging_utils import logger
+from src.utils.palette_utils import apply_palette_to_greyscale, get_palette_row
+
+
+@dataclass
+class AdjustmentState:
+    hue: int = 0            # -180..180
+    saturation: int = 0     # -100..100 (percent)
+    value: int = 0          # -100..100 (percent)
+    brightness: int = 0     # -100..100 (percent)
+    contrast: int = 0       # -100..100 (percent)
+
+
+class PaletteAdjustCanvas(QLabel):
+    """Simple canvas to display a palette and allow rectangular selection."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumSize(400, 200)
+        self.setStyleSheet("background-color: #1f1f1f; border: 1px solid #444;")
+        self._image_array: Optional[np.ndarray] = None
+        self._selection_mask: Optional[np.ndarray] = None
+        self._selection_rect: Optional[QRect] = None
+        self._dragging = False
+        self._scale_factor = 1.0
+        self._offset_x = 0
+        self._offset_y = 0
+        self._cached_scaled_size: Tuple[int, int] | None = None
+        self.setMouseTracking(True)
+
+    # ---------- Image / selection helpers ----------
+    def set_image(self, img_array: np.ndarray):
+        if img_array is None or img_array.ndim != 3:
+            raise ValueError("Expected HxWxC image array")
+        self._image_array = img_array.copy()
+        self._selection_mask = np.zeros(self._image_array.shape[:2], dtype=bool)
+        self._selection_rect = None
+        self._update_pixmap(self._image_array)
+
+    def image_array(self) -> Optional[np.ndarray]:
+        return self._image_array
+
+    def selection_mask(self) -> Optional[np.ndarray]:
+        return self._selection_mask
+
+    def clear_selection(self):
+        if self._selection_mask is not None:
+            self._selection_mask.fill(False)
+        self._selection_rect = None
+        if self._image_array is not None:
+            self._update_pixmap(self._image_array)
+
+    def select_row(self, row_idx: int, row_height: int = 4):
+        if self._image_array is None:
+            return
+        h, w, _ = self._image_array.shape
+        row_idx = max(0, min(h - 1, row_idx))
+        y0 = row_idx
+        y1 = min(h, y0 + max(1, row_height))
+        mask = np.zeros((h, w), dtype=bool)
+        mask[y0:y1, :] = True
+        self._selection_mask = mask
+        self._selection_rect = QRect(0, y0, w, y1 - y0)
+        self._update_pixmap(self._image_array)
+
+    def set_adjusted_preview(self, preview_array: np.ndarray):
+        """Update display with adjusted preview (non-destructive)."""
+        if preview_array is None:
+            return
+        self._update_pixmap(preview_array)
+
+    def _update_pixmap(self, src_array: np.ndarray):
+        h, w, c = src_array.shape
+        # Ensure selection mask matches current image size to avoid boolean
+        # indexing errors when preview dimensions change (e.g. tiled row view).
+        if self._selection_mask is not None and self._selection_mask.shape != (h, w):
+            self._selection_mask = np.zeros((h, w), dtype=bool)
+            self._selection_rect = None
+
+        if c == 3:
+            fmt = QImage.Format.Format_RGB888
+        else:
+            fmt = QImage.Format.Format_RGBA8888
+        qimg = QImage(src_array.data, w, h, src_array.strides[0], fmt)
+
+        # Fit-to-window scale similar to palette_creator
+        ww, wh = self.width(), self.height()
+        base_scale = min(ww / max(1, w), wh / max(1, h))
+        self._scale_factor = base_scale
+        scaled_w = max(1, int(w * base_scale))
+        scaled_h = max(1, int(h * base_scale))
+        scaled_pix = QPixmap.fromImage(qimg).scaled(scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._cached_scaled_size = (scaled_w, scaled_h)
+
+        # Centered offsets
+        self._offset_x = (ww - scaled_w) // 2
+        self._offset_y = (wh - scaled_h) // 2
+
+        viewport = QPixmap(ww, wh)
+        viewport.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(viewport)
+        painter.drawPixmap(self._offset_x, self._offset_y, scaled_pix)
+
+        # Draw selection overlay if any
+        if self._selection_mask is not None and self._selection_mask.any():
+            overlay = np.zeros((h, w, 4), dtype=np.uint8)
+            overlay[self._selection_mask] = [0, 170, 255, 110]
+            q_overlay = QImage(overlay.data, w, h, overlay.strides[0], QImage.Format.Format_RGBA8888)
+            overlay_pix = QPixmap.fromImage(q_overlay).scaled(scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            painter.drawPixmap(self._offset_x, self._offset_y, overlay_pix)
+
+        painter.end()
+        self.setPixmap(viewport)
+
+    # ---------- Mouse events ----------
+    def mousePressEvent(self, event: QMouseEvent):
+        if self._image_array is None:
+            return
+        if event.button() == Qt.LeftButton:
+            self._dragging = True
+            self._selection_rect = QRect(event.position().toPoint(), event.position().toPoint())
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if self._dragging and self._selection_rect is not None:
+            self._selection_rect.setBottomRight(event.position().toPoint())
+            self._update_selection_from_rect()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton and self._dragging:
+            self._dragging = False
+            self._update_selection_from_rect()
+        super().mouseReleaseEvent(event)
+
+    def _update_selection_from_rect(self):
+        if self._image_array is None or self._selection_rect is None or self._cached_scaled_size is None:
+            return
+        h, w, _ = self._image_array.shape
+        scaled_w, scaled_h = self._cached_scaled_size
+
+        # Map widget coords back to image coords
+        rect = self._selection_rect.normalized()
+        x0 = max(0, rect.left() - self._offset_x)
+        y0 = max(0, rect.top() - self._offset_y)
+        x1 = max(0, rect.right() - self._offset_x)
+        y1 = max(0, rect.bottom() - self._offset_y)
+
+        # Scale to image space
+        if scaled_w == 0 or scaled_h == 0:
+            return
+        img_x0 = int(x0 * w / scaled_w)
+        img_y0 = int(y0 * h / scaled_h)
+        img_x1 = int(x1 * w / scaled_w)
+        img_y1 = int(y1 * h / scaled_h)
+
+        x0_i = max(0, min(w - 1, min(img_x0, img_x1)))
+        y0_i = max(0, min(h - 1, min(img_y0, img_y1)))
+        x1_i = max(0, min(w, max(img_x0, img_x1) + 1))
+        y1_i = max(0, min(h, max(img_y0, img_y1) + 1))
+
+        mask = np.zeros((h, w), dtype=bool)
+        mask[y0_i:y1_i, x0_i:x1_i] = True
+        self._selection_mask = mask
+        self._update_pixmap(self._image_array)
+
+
+class PaletteAdjuster(BaseWidget):
+    """Widget to tweak palette rows and append new variants."""
+
+    def __init__(self, parent: Optional[QWidget], text: str = "Palette Adjuster"):
+        super().__init__(parent=parent, text=text, vertical=True)
+
+        # State
+        self.palette_path: Optional[str] = None
+        self.palette_img: Optional[Image.Image] = None
+        self.palette_array: Optional[np.ndarray] = None
+        self.original_array: Optional[np.ndarray] = None
+        self.greyscale_img: Optional[Image.Image] = None
+        self.adjust_state = AdjustmentState()
+        self.start_color = QColor(0, 0, 0)
+        self.end_color = QColor(255, 255, 255)
+        self.row_height = int(cfg.get(cfg.ci_palette_row_height)) if hasattr(cfg, 'ci_palette_row_height') else 4
+
+        # Settings / help drawers
+        self.settings_widget = PaletteSettings(self)
+        self.settings_drawer.addWidget(self.settings_widget)
+
+        # Top file pickers
+        self.palette_card = PushSettingCard(
+            self.tr("Palette Texture"),
+            CustomIcons.PALETTE_2.icon(stroke=True),
+            self.tr("Select an existing palette image"),
+            self.tr("No palette selected"),
+        )
+        self.palette_card.clicked.connect(self.on_select_palette)
+
+        self.greyscale_card = PushSettingCard(
+            self.tr("Greyscale Preview (optional)"),
+            CustomIcons.GREYSCALE.icon(),
+            self.tr("Pick a greyscale image to preview the palette"),
+            self.tr("No greyscale selected"),
+        )
+        self.greyscale_card.clicked.connect(self.on_select_greyscale)
+
+        self.addToFrame(self.palette_card)
+        self.addToFrame(self.greyscale_card)
+
+        # Splitter layout (left: previews, right: controls)
+        splitter = QSplitter(Qt.Horizontal)
+
+        # Left side
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+
+        self.canvas = PaletteAdjustCanvas()
+        left_layout.addWidget(self.canvas, 3)
+
+        # Greyscale preview
+        preview_label = QLabel(self.tr("Greyscale Preview"))
+        preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_img_label = QLabel()
+        self.preview_img_label.setAlignment(Qt.AlignCenter)
+        self.preview_img_label.setMinimumSize(300, 420)
+        self.preview_img_label.setStyleSheet("background-color: #111; border: 1px solid #333;")
+
+        left_layout.addWidget(preview_label)
+        left_layout.addWidget(self.preview_img_label, 2)
+
+        splitter.addWidget(left_panel)
+
+        # Right side controls
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+
+        # Selection controls
+        sel_row_layout = QVBoxLayout()
+
+        # Row selector as RangeSettingCard (1-based)
+        self.row_cfg = RangeConfigItem("palette_adjuster", "row_index", 1, RangeValidator(1, 256))
+        self.row_card = RangeSettingCard(
+            self.row_cfg,
+            CustomIcons.HEIGHT.icon(stroke=True) if hasattr(CustomIcons, 'HEIGHT') else FIF.BRUSH,
+            self.tr("Row"),
+            self.tr("Select palette row (1-based)")
+        )
+        self._updating_row_card = False
+        self.row_card.valueChanged.connect(self.on_row_card_changed)
+        sel_row_layout.addWidget(self.row_card)
+
+        row_btns = QHBoxLayout()
+        self.select_row_btn = PushButton(self.tr("Select Row"))
+        self.select_row_btn.clicked.connect(self.on_select_row)
+        row_btns.addWidget(self.select_row_btn)
+
+        self.clear_sel_btn = PushButton(self.tr("Clear Selection"))
+        self.clear_sel_btn.clicked.connect(self.canvas.clear_selection)
+        row_btns.addWidget(self.clear_sel_btn)
+
+        sel_row_layout.addLayout(row_btns)
+
+        right_layout.addLayout(sel_row_layout)
+
+        # Apply scope
+        self.apply_selection_only = QCheckBox(self.tr("Adjust selection only (otherwise entire palette)"))
+        self.apply_selection_only.setChecked(True)
+        right_layout.addWidget(self.apply_selection_only)
+
+        # Adjustment cards
+        self.hue_cfg = RangeConfigItem("palette_adjuster", "hue", 0, RangeValidator(-180, 180))
+        self.sat_cfg = RangeConfigItem("palette_adjuster", "saturation", 0, RangeValidator(-100, 100))
+        self.val_cfg = RangeConfigItem("palette_adjuster", "value", 0, RangeValidator(-100, 100))
+        self.bright_cfg = RangeConfigItem("palette_adjuster", "brightness", 0, RangeValidator(-100, 100))
+        self.contrast_cfg = RangeConfigItem("palette_adjuster", "contrast", 0, RangeValidator(-100, 100))
+
+        right_layout.addWidget(QLabel("<b>HSV Adjustments</b>"))
+        self.hue_card = RangeSettingCard(self.hue_cfg, CustomIcons.SINE.icon(stroke=True) if hasattr(CustomIcons, 'SINE') else FIF.BRUSH,
+                                         self.tr("Hue"), self.tr("-180 to 180"))
+        self.sat_card = RangeSettingCard(self.sat_cfg, CustomIcons.SATURATION.icon(stroke=False),
+                                         self.tr("Saturation"), self.tr("-100 to 100"))
+        self.val_card = RangeSettingCard(self.val_cfg, CustomIcons.SPARK.icon(),
+                                         self.tr("Value"), self.tr("-100 to 100"))
+
+        right_layout.addWidget(self.hue_card)
+        right_layout.addWidget(self.sat_card)
+        right_layout.addWidget(self.val_card)
+
+        right_layout.addWidget(QLabel("<b>Brightness / Contrast</b>"))
+        self.brightness_card = RangeSettingCard(self.bright_cfg, FIF.BRIGHTNESS,
+                                                self.tr("Brightness"), self.tr("-100 to 100"))
+        self.contrast_card = RangeSettingCard(self.contrast_cfg, CustomIcons.CONTRAST.icon(stroke=True),
+                                              self.tr("Contrast"), self.tr("-100 to 100"))
+
+        right_layout.addWidget(self.brightness_card)
+        right_layout.addWidget(self.contrast_card)
+
+        for card in (self.hue_card, self.sat_card, self.val_card, self.brightness_card, self.contrast_card):
+            card.valueChanged.connect(self.on_adjustments_changed)
+            card.valueChanged.connect(self.apply_preview_adjustment)
+
+        btn_row = QHBoxLayout()
+        self.preview_btn = PushButton(self.tr("Preview Adjustment"))
+        self.preview_btn.clicked.connect(self.apply_preview_adjustment)
+        btn_row.addWidget(self.preview_btn)
+
+        self.apply_btn = PrimaryPushButton(self.tr("Apply Adjustment"))
+        self.apply_btn.clicked.connect(self.commit_adjustment)
+        btn_row.addWidget(self.apply_btn)
+        right_layout.addLayout(btn_row)
+
+        # Gradient / fill
+        right_layout.addWidget(QLabel("<b>Gradient / Fill</b>"))
+        grad_row = QHBoxLayout()
+        self.pick_start_btn = PushButton(self.tr("Start Color"))
+        self.pick_start_btn.clicked.connect(lambda: self.pick_color(is_start=True))
+        grad_row.addWidget(self.pick_start_btn)
+        self.pick_end_btn = PushButton(self.tr("End Color"))
+        self.pick_end_btn.clicked.connect(lambda: self.pick_color(is_start=False))
+        grad_row.addWidget(self.pick_end_btn)
+        right_layout.addLayout(grad_row)
+
+        grad_apply_row = QHBoxLayout()
+        self.gradient_h_btn = PushButton(self.tr("Apply Gradient H"))
+        self.gradient_h_btn.clicked.connect(lambda: self.apply_gradient(horizontal=True))
+        grad_apply_row.addWidget(self.gradient_h_btn)
+        self.gradient_v_btn = PushButton(self.tr("Apply Gradient V"))
+        self.gradient_v_btn.clicked.connect(lambda: self.apply_gradient(horizontal=False))
+        grad_apply_row.addWidget(self.gradient_v_btn)
+        right_layout.addLayout(grad_apply_row)
+
+        fill_row = QHBoxLayout()
+        self.fill_btn = PushButton(self.tr("Fill Selection"))
+        self.fill_btn.clicked.connect(self.apply_fill)
+        fill_row.addWidget(self.fill_btn)
+        right_layout.addLayout(fill_row)
+
+        # Palette operations
+        right_layout.addWidget(QLabel("<b>Palette Operations</b>"))
+        pal_row = QHBoxLayout()
+        self.reload_btn = PushButton(self.tr("Reload Palette"))
+        self.reload_btn.clicked.connect(self.reload_palette)
+        pal_row.addWidget(self.reload_btn)
+        self.reset_btn = PushButton(self.tr("Reset Adjustments"))
+        self.reset_btn.clicked.connect(self.reset_to_original)
+        pal_row.addWidget(self.reset_btn)
+        right_layout.addLayout(pal_row)
+
+        self.add_row_btn = PrimaryPushButton(self.tr("Add Adjusted Row To Palette"))
+        self.add_row_btn.clicked.connect(self.append_row_to_palette)
+        right_layout.addWidget(self.add_row_btn)
+
+        right_layout.addStretch(1)
+
+        splitter.addWidget(right_panel)
+        splitter.setSizes([900, 420])
+        self.addToFrame(splitter)
+
+        # Ensure a default greyscale is available for preview if user doesn't pick one
+        self._ensure_default_greyscale_loaded()
+
+        # Editing is disabled until a row is explicitly selected
+        self._row_selected = False
+        self._update_edit_enabled()
+
+        # Buffer of the selected logical row block being edited
+        self._working_row: Optional[np.ndarray] = None
+
+        self._update_color_buttons()
+
+    # ---------- File pickers ----------
+    def on_select_palette(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.tr("Select Palette"), "", self.tr("Images (*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds)"))
+        if not path:
+            return
+        try:
+            img = load_image(path)
+            self.palette_img = img.convert("RGBA")
+            self.palette_array = np.array(self.palette_img, dtype=np.uint8)
+            self.original_array = self.palette_array.copy()
+            h, w = self.palette_array.shape[:2]
+            # Slider counts logical rows as blocks of height row_height
+            max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+            self._set_row_range_and_value(max_blocks, 1)
+            self.palette_path = path
+            self.palette_card.setContent(f"{os.path.basename(path)} | {w}x{h}")
+            self.canvas.set_image(self.palette_array)
+            self.update_preview()
+        except Exception as e:
+            logger.exception("Failed to open palette image: %s", e)
+            self.palette_card.setContent(self.tr("Failed to open palette"))
+
+    def on_select_greyscale(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.tr("Select Greyscale"), "", self.tr("Images (*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds)"))
+        if not path:
+            return
+        try:
+            img = load_image(path, f='L')
+            self.greyscale_img = img
+            self.greyscale_card.setContent(f"{os.path.basename(path)} | {img.size[0]}x{img.size[1]} (L)")
+            self.update_preview()
+        except Exception as e:
+            logger.exception("Failed to open greyscale image: %s", e)
+            self.greyscale_card.setContent(self.tr("Failed to open greyscale"))
+            
+    def _ensure_default_greyscale_loaded(self):
+        """Load the built-in grayscale_4k_cutout as a fallback greyscale preview.
+
+        If the user hasn't selected their own greyscale texture, this image is used
+        so that the preview area always shows a meaningful result.
+        """
+        if self.greyscale_img is not None:
+            return
+        try:
+            default_grey_path = os.path.normpath(os.path.join(get_app_root(), 'resource', 'grayscale_4k_cutout.png'))
+            if os.path.isfile(default_grey_path):
+                img_g = load_image(default_grey_path, f='L')
+                self.greyscale_img = img_g
+                logger.info("Loaded default greyscale image for palette adjuster: %s", default_grey_path)
+            else:
+                logger.warning("Default greyscale for palette adjuster not found at: %s", default_grey_path)
+        except Exception as e:
+            logger.exception("Failed to load default greyscale image for palette adjuster: %s", e)
+
+    # ---------- Selection ----------
+    def on_row_card_changed(self, val: int):
+        if self._updating_row_card:
+            return
+        self.canvas.clear_selection()
+        self._refresh_canvas_row_view()
+        self.update_preview()
+        # Changing the row clears selection; disable edits again until user selects
+        self._row_selected = False
+        # Clear working buffer tied to previous row
+        self._working_row = None
+        self._update_edit_enabled()
+
+    def on_select_row(self):
+        if self.palette_array is None:
+            return
+        if self.canvas.image_array() is None:
+            return
+        # Extract the current logical row block from the palette into a working buffer
+        h = self.palette_array.shape[0]
+        max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+        sel_row = self._get_row_value(max_row=max_blocks)
+        row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+        row_end = min(h, row_base + max(1, self.row_height))
+        self._working_row = self.palette_array[row_base:row_end, :, :].copy()
+        # Refresh canvas to show working row tiled
+        self._refresh_canvas_row_view()
+        self._row_selected = True
+        self._update_edit_enabled()
+
+    # ---------- Adjustment handling ----------
+    def on_adjustments_changed(self, *_args):
+        self.adjust_state.hue = int(self.hue_cfg.value)
+        self.adjust_state.saturation = int(self.sat_cfg.value)
+        self.adjust_state.value = int(self.val_cfg.value)
+        self.adjust_state.brightness = int(self.bright_cfg.value)
+        self.adjust_state.contrast = int(self.contrast_cfg.value)
+
+    def apply_preview_adjustment(self):
+        if self._working_row is None:
+            return
+        adjusted_row = self._apply_adjustment_to_array(self._working_row)
+        if adjusted_row is not None:
+            self.canvas.set_adjusted_preview(self._build_row_display_from_array(adjusted_row))
+            # Use adjusted row as the palette for greyscale preview
+            self.update_preview(adjusted_row)
+
+    def commit_adjustment(self):
+        if self._working_row is None:
+            return
+        adjusted_row = self._apply_adjustment_to_array(self._working_row)
+        if adjusted_row is not None:
+            self._working_row = adjusted_row
+            self._refresh_canvas_row_view()
+            self.update_preview(self._working_row)
+
+    def _apply_adjustment(self, src: np.ndarray, preview_only: bool) -> Optional[np.ndarray]:
+        if src is None:
+            return None
+        if cv2 is None:
+            if not preview_only:
+                InfoBar.warning(
+                    title=self.tr("Missing Dependency"),
+                    content=self.tr("OpenCV is not available; HSV adjustments are disabled."),
+                    duration=3000,
+                    parent=self,
+                )
+            return None
+
+        # Legacy method; now when used we apply to the entire input src
+        adj = src.copy()
+        try:
+            rgb = adj[:, :, :3].astype(np.float32)
+
+            # OpenCV expects 0-255 uint8 in RGB order
+            hsv = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+
+            # Hue shift (-180..180) maps to OpenCV 0..180 scale (H is 0-179)
+            h_shift = self.adjust_state.hue / 2.0
+            hsv[:, :, 0] = (hsv[:, :, 0] + h_shift) % 180
+
+            s_scale = 1.0 + self.adjust_state.saturation / 100.0
+            v_scale = 1.0 + self.adjust_state.value / 100.0
+            hsv[:, :, 1] = np.clip(hsv[:, :, 1] * s_scale, 0, 255)
+            hsv[:, :, 2] = np.clip(hsv[:, :, 2] * v_scale, 0, 255)
+
+            rgb_new = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
+
+            # Brightness / contrast on 0..255
+            c_scale = 1.0 + self.adjust_state.contrast / 100.0
+            b_add = self.adjust_state.brightness * 255.0 / 100.0
+            rgb_new = np.clip((rgb_new - 127.5) * c_scale + 127.5 + b_add, 0, 255)
+
+            adj[:, :, :3] = np.clip(rgb_new, 0, 255).astype(np.uint8)
+            return adj
+        except Exception:
+            logger.exception("Failed to apply adjustments")
+            if not preview_only:
+                InfoBar.warning(
+                    title=self.tr("Adjustment Failed"),
+                    content=self.tr("Could not apply adjustments."),
+                    duration=3000,
+                    parent=self,
+                )
+            return None
+
+    def _apply_adjustment_to_array(self, arr: np.ndarray) -> Optional[np.ndarray]:
+        """Apply HSV/brightness/contrast directly to a small array (working row)."""
+        if arr is None or arr.size == 0:
+            return None
+        if cv2 is None:
+            return None
+        try:
+            out = arr.copy()
+            rgb = out[:, :, :3].astype(np.float32)
+            hsv = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+            h_shift = self.adjust_state.hue / 2.0
+            hsv[:, :, 0] = (hsv[:, :, 0] + h_shift) % 180
+            s_scale = 1.0 + self.adjust_state.saturation / 100.0
+            v_scale = 1.0 + self.adjust_state.value / 100.0
+            hsv[:, :, 1] = np.clip(hsv[:, :, 1] * s_scale, 0, 255)
+            hsv[:, :, 2] = np.clip(hsv[:, :, 2] * v_scale, 0, 255)
+            rgb_new = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
+            c_scale = 1.0 + self.adjust_state.contrast / 100.0
+            b_add = self.adjust_state.brightness * 255.0 / 100.0
+            rgb_new = np.clip((rgb_new - 127.5) * c_scale + 127.5 + b_add, 0, 255)
+            out[:, :, :3] = rgb_new.astype(np.uint8)
+            return out
+        except Exception:
+            logger.exception("Failed to apply adjustments to working row")
+            return None
+
+    # ---------- Gradient / Fill ----------
+    def pick_color(self, is_start: bool):
+        color = QColorDialog.getColor(self.start_color if is_start else self.end_color, self)
+        if color.isValid():
+            if is_start:
+                self.start_color = color
+            else:
+                self.end_color = color
+            self._update_color_buttons()
+
+    def apply_gradient(self, horizontal: bool):
+        if self._working_row is None:
+            return
+        mask_view = self.canvas.selection_mask()
+        apply_selection = self.apply_selection_only.isChecked()
+        if mask_view is None or not mask_view.any() or not apply_selection:
+            col_mask = np.ones(self._working_row.shape[1], dtype=bool)
+        else:
+            col_mask = mask_view.any(axis=0)
+
+        # Bounds across working row using column mask
+        x_indices = np.where(col_mask)[0]
+        if x_indices.size == 0:
+            return
+        x0, x1 = int(x_indices.min()), int(x_indices.max())
+        y0, y1 = 0, self._working_row.shape[0] - 1
+
+        arr = self._working_row.copy()
+        start = np.array([self.start_color.red(), self.start_color.green(), self.start_color.blue()], dtype=np.float32)
+        end = np.array([self.end_color.red(), self.end_color.green(), self.end_color.blue()], dtype=np.float32)
+
+        if horizontal:
+            span = max(1, x1 - x0)
+            ramp = (np.arange(x0, x1 + 1) - x0) / span
+            grad = start[None, :] * (1.0 - ramp[:, None]) + end[None, :] * ramp[:, None]
+            for xi in range(x0, x1 + 1):
+                if col_mask[xi]:
+                    arr[y0:y1 + 1, xi, :3] = np.clip(grad[xi - x0], 0, 255).astype(np.uint8)
+        else:
+            span = max(1, y1 - y0)
+            ramp = (np.arange(y0, y1 + 1) - y0) / span
+            grad = start[None, :] * (1.0 - ramp[:, None]) + end[None, :] * ramp[:, None]
+            for yi in range(y0, y1 + 1):
+                arr[yi, x0:x1 + 1, :3][col_mask[x0:x1 + 1]] = np.clip(grad[yi - y0], 0, 255).astype(np.uint8)
+
+        self._working_row = arr
+        self._refresh_canvas_row_view()
+        self.update_preview(self._working_row)
+
+    def apply_fill(self):
+        if self._working_row is None:
+            return
+        mask_view = self.canvas.selection_mask()
+        apply_selection = self.apply_selection_only.isChecked()
+        if mask_view is None or not mask_view.any() or not apply_selection:
+            col_mask = np.ones(self._working_row.shape[1], dtype=bool)
+        else:
+            col_mask = mask_view.any(axis=0)
+
+        color = self.start_color
+        arr = self._working_row.copy()
+        arr[:, col_mask, 0] = color.red()
+        arr[:, col_mask, 1] = color.green()
+        arr[:, col_mask, 2] = color.blue()
+
+        self._working_row = arr
+        self._refresh_canvas_row_view()
+        self.update_preview(self._working_row)
+
+    # ---------- Palette operations ----------
+    def reload_palette(self):
+        if not self.palette_path:
+            return
+        try:
+            img = load_image(self.palette_path)
+            self.palette_img = img.convert("RGBA")
+            self.palette_array = np.array(self.palette_img, dtype=np.uint8)
+            self.original_array = self.palette_array.copy()
+            # Clear working row on reload
+            self._working_row = None
+            self._row_selected = False
+            self._update_edit_enabled()
+            h, w = self.palette_array.shape[:2]
+            max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+            self._set_row_range_and_value(max_blocks, max(1, min(self._get_row_value(), max_blocks)))
+            self._refresh_canvas_row_view()
+            self.update_preview()
+        except Exception:
+            logger.exception("Failed to reload palette")
+
+    def reset_to_original(self):
+        if self.original_array is None:
+            return
+        self.palette_array = self.original_array.copy()
+        self.palette_img = Image.fromarray(self.palette_array, mode="RGBA" if self.palette_array.shape[2] == 4 else "RGB")
+        self._working_row = None
+        self._row_selected = False
+        self._update_edit_enabled()
+        self._refresh_canvas_row_view()
+        self.update_preview()
+
+    def append_row_to_palette(self):
+        if self.palette_array is None or self.palette_path is None:
+            return
+        if self._working_row is None:
+            InfoBar.warning(
+                title=self.tr("No Row Selected"),
+                content=self.tr("Select a row first, then edit before appending."),
+                duration=3000,
+                parent=self,
+            )
+            return
+        h, w, c = self.palette_array.shape
+        # Work with logical row blocks (row_height tall)
+        max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+        sel_row = self._get_row_value(max_row=max_blocks)
+        row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+        row_end = min(h, row_base + max(1, self.row_height))
+        try:
+            # Build new block from the working row (repeat to configured row_height if needed)
+            row_data = self._working_row[:, :, :3]
+            if row_data.shape[0] < self.row_height:
+                reps = math.ceil(self.row_height / max(1, row_data.shape[0]))
+                new_block = np.repeat(row_data, reps, axis=0)[:self.row_height]
+            else:
+                new_block = row_data
+
+            pal_arr = self.palette_array
+            if pal_arr.shape[2] == 3:
+                pal_new = np.concatenate([pal_arr, new_block], axis=0)
+                mode = "RGB"
+            else:
+                row_rgba = np.zeros((new_block.shape[0], w, 4), dtype=np.uint8)
+                row_rgba[:, :, :3] = new_block
+                row_rgba[:, :, 3] = 255
+                pal_new = np.concatenate([pal_arr, row_rgba], axis=0)
+                mode = "RGBA"
+
+            new_img = Image.fromarray(pal_new, mode=mode)
+            save_image(new_img, self.palette_path, True)
+            self.palette_img = new_img
+            self.palette_array = np.array(new_img, dtype=np.uint8)
+            self.original_array = self.palette_array.copy()
+            # Update slider to new block count, keep current selection
+            new_h = self.palette_array.shape[0]
+            new_blocks = max(1, math.ceil(new_h / max(1, self.row_height)))
+            self._set_row_range_and_value(new_blocks, max(1, min(sel_row, new_blocks)))
+            # Clear working row; require reselect for next edit
+            self._working_row = None
+            self._row_selected = False
+            self._update_edit_enabled()
+            self._refresh_canvas_row_view()
+            self.update_preview()
+            InfoBar.success(
+                title=self.tr("Palette Updated"),
+                content=self.tr("Row appended and palette reloaded."),
+                duration=3000,
+                parent=self,
+            )
+        except Exception:
+            logger.exception("Failed to append row")
+            InfoBar.warning(
+                title=self.tr("Append Failed"),
+                content=self.tr("Unable to append row."),
+                duration=3000,
+                parent=self,
+            )
+
+    # ---------- Preview ----------
+    def update_preview(self, preview_palette: Optional[np.ndarray] = None):
+        """Update the greyscale preview using the current palette row.
+
+        If the user has not selected a greyscale image, a built-in
+        grayscale_4k_cutout is used as a fallback so the preview is
+        never empty once a palette is loaded.
+        """
+        # We need some palette data to work with
+        if self.palette_img is None and preview_palette is None:
+            return
+
+        # Ensure we have some greyscale source (user-selected or default)
+        self._ensure_default_greyscale_loaded()
+        if self.greyscale_img is None:
+            # Nothing to preview against
+            return
+
+        try:
+            palette_img = self.palette_img
+            if preview_palette is not None:
+                # Build a temporary palette from the provided row/block
+                mode = "RGBA" if preview_palette.shape[2] == 4 else "RGB"
+                palette_img = Image.fromarray(preview_palette[:, :, :3], mode=mode)
+
+            # Determine which palette row block to sample (1-based UI)
+            h = palette_img.size[1]
+            max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+            sel_row = self._get_row_value(max_row=max_blocks)
+            row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+            row_y = max(0, min(h - 1, row_base))
+            palette_row = get_palette_row(palette_img, y=row_y)
+
+            colored = apply_palette_to_greyscale(palette_img, self.greyscale_img, palette_row)
+            arr = np.array(colored.convert("RGBA"), dtype=np.uint8)
+            self._set_preview(self.preview_img_label, arr)
+        except Exception:
+            logger.exception("Failed to update preview")
+
+    def _set_preview(self, label: QLabel, row_array: np.ndarray):
+        if row_array is None or row_array.size == 0:
+            return
+        arr = row_array
+        if arr.shape[2] == 3:
+            fmt = QImage.Format.Format_RGB888
+        else:
+            fmt = QImage.Format.Format_RGBA8888
+        qimg = QImage(arr.data, arr.shape[1], arr.shape[0], arr.strides[0], fmt)
+
+        # Fit greyscale preview into the label while keeping aspect ratio,
+        # similar to PaletteApplier so it doesn't appear overly zoomed.
+        pix = QPixmap.fromImage(qimg)
+        target_w = max(1, label.width())
+        target_h = max(1, label.height())
+        pix = pix.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        label.setPixmap(pix)
+
+    # ---------- Row view helpers ----------
+    def _refresh_canvas_row_view(self):
+        if self.palette_array is None:
+            return
+        h = self.palette_array.shape[0]
+        max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+        sel_row = self._get_row_value(max_row=max_blocks)
+        row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+        row_end = min(h, row_base + max(1, self.row_height))
+        self._updating_row_card = True
+        self.row_card.setValue(sel_row)
+        self._updating_row_card = False
+        # If we have a working row buffer, display it; otherwise show the slice from palette
+        if self._working_row is not None and self._working_row.size != 0:
+            display = self._build_row_display_from_array(self._working_row)
+        else:
+            row_slice = self.palette_array[row_base: row_end, :, :]
+            display = self._build_row_display_from_array(row_slice)
+        self.canvas.set_image(display)
+
+    def _build_row_display_from_array(self, arr: np.ndarray) -> np.ndarray:
+        if arr is None or arr.size == 0:
+            return arr
+        h = arr.shape[0]
+        target_h = max(24, h * 6)
+        repeat = max(1, math.ceil(target_h / h))
+        tiled = np.repeat(arr, repeat, axis=0)
+        return tiled[:target_h]
+
+    def _extract_row_slice(self, array: np.ndarray) -> np.ndarray:
+        if array is None or array.size == 0:
+            return array
+        h = array.shape[0]
+        max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+        sel_row = self._get_row_value(max_row=max_blocks)
+        row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+        row_end = min(h, row_base + max(1, self.row_height))
+        return array[row_base: row_end, :, :]
+
+    def _build_palette_mask_from_canvas_selection(self) -> Optional[np.ndarray]:
+        if self.palette_array is None:
+            return None
+        mask_view = self.canvas.selection_mask()
+        if mask_view is None or not mask_view.any():
+            return None
+        col_mask = mask_view.any(axis=0)
+        if not col_mask.any():
+            return None
+        h, w = self.palette_array.shape[:2]
+        max_blocks = max(1, math.ceil(h / max(1, self.row_height)))
+        sel_row = self._get_row_value(max_row=max_blocks)
+        row_base = max(0, (sel_row - 1) * max(1, self.row_height))
+        row_end = min(h, row_base + max(1, self.row_height))
+        palette_mask = np.zeros((h, w), dtype=bool)
+        palette_mask[row_base:row_end, :] = col_mask[None, :]
+        return palette_mask
+
+    # ---------- Row helpers ----------
+    def _set_row_range_and_value(self, max_row: int, value: int):
+        max_row = max(1, max_row)
+        self.row_card.slider.setRange(1, max_row)
+        self._updating_row_card = True
+        self.row_card.setValue(max(1, min(max_row, value)))
+        self._updating_row_card = False
+
+    def _get_row_value(self, max_row: Optional[int] = None) -> int:
+        val = int(self.row_cfg.value)
+        if max_row is not None:
+            val = max(1, min(max_row, val))
+        return val
+
+    # ---------- Color UI helpers ----------
+    def _update_color_buttons(self):
+        def _text_color(qc: QColor) -> str:
+            # Simple luminance check
+            lum = (0.299 * qc.red() + 0.587 * qc.green() + 0.114 * qc.blue()) / 255
+            return "#000" if lum > 0.6 else "#fff"
+
+        start_css = f"background-color: rgb({self.start_color.red()}, {self.start_color.green()}, {self.start_color.blue()});"
+        end_css = f"background-color: rgb({self.end_color.red()}, {self.end_color.green()}, {self.end_color.blue()});"
+        grad_css = (
+            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            f" stop:0 rgb({self.start_color.red()}, {self.start_color.green()}, {self.start_color.blue()}),"
+            f" stop:1 rgb({self.end_color.red()}, {self.end_color.green()}, {self.end_color.blue()}));"
+        )
+        text_start = _text_color(self.start_color)
+        text_end = _text_color(self.end_color)
+        self.pick_start_btn.setStyleSheet(start_css + f" color: {text_start};")
+        self.pick_end_btn.setStyleSheet(end_css + f" color: {text_end};")
+        self.gradient_h_btn.setStyleSheet(grad_css + " color: #fff;")
+        self.gradient_v_btn.setStyleSheet(grad_css + " color: #fff;")
+        self.fill_btn.setStyleSheet(start_css + f" color: {text_start};")
+
+    # ---------- Enable/disable editing until row is selected ----------
+    def _update_edit_enabled(self):
+        enabled = bool(getattr(self, "_row_selected", False))
+        # Range cards and buttons
+        for w in (
+            self.hue_card,
+            self.sat_card,
+            self.val_card,
+            self.brightness_card,
+            self.contrast_card,
+            self.preview_btn,
+            self.apply_btn,
+            self.apply_selection_only,
+            self.pick_start_btn,
+            self.pick_end_btn,
+            self.gradient_h_btn,
+            self.gradient_v_btn,
+            self.fill_btn,
+            self.add_row_btn,
+        ):
+            try:
+                w.setEnabled(enabled)
+            except Exception:
+                pass
+
+
+# Fallback import for cv2 if missing at module import time
+try:
+    import cv2
+except Exception as _cv2_import_error:  # pragma: no cover - optional dependency handled at runtime
+    cv2 = None
+    logger = logger if 'logger' in globals() else None
+    if logger:
+        logger.warning("OpenCV not available; HSV adjustments will be skipped.")

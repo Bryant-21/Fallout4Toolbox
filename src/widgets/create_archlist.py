@@ -2,7 +2,7 @@ import os
 
 from PySide6 import QtWidgets
 from PySide6.QtWidgets import QWidget, QFileDialog
-from qfluentwidgets import FluentIcon as FIF
+from qfluentwidgets import FluentIcon as FIF, InfoBar
 from qfluentwidgets import PrimaryPushButton, PushSettingCard, ConfigItem, FolderValidator
 
 from src.help.Archlist_help import ArchlistHelp
@@ -36,31 +36,23 @@ def create_archlist(directory_path, output_file):
     # Get all files in the directory and subdirectories
     all_files = []
 
-    # Check if the directory is named "Data" or contains a "Data" subdirectory
-    data_dir = directory_path
-    if os.path.basename(directory_path) != "Data":
-        potential_data_dir = os.path.join(directory_path, "Data")
-        if os.path.isdir(potential_data_dir):
-            data_dir = potential_data_dir
-
     for root, _, files in os.walk(directory_path):
         for file in files:
+            # Ignore archlist, achlist, esp and ini files
+            if file.lower().endswith(('.archlist', '.achlist', '.esp', '.ini')):
+                continue
+
             # Get the full path of the file
             full_path = os.path.join(root, file)
 
             # Create path in the format "Data\\path\\to\\file"
-            if os.path.basename(data_dir) == "Data":
-                # If we're in a Data directory, make paths relative to it
-                if full_path.startswith(data_dir):
-                    rel_path = os.path.relpath(full_path, os.path.dirname(data_dir))
-                else:
-                    # If file is outside Data directory, skip it
-                    continue
-            else:
-                # If no Data directory found, use the base directory name as the start
-                rel_path = os.path.relpath(full_path, os.path.dirname(directory_path))
-                # Prepend "Data\\" to match the format
-                rel_path = os.path.join("Data", rel_path)
+            # Always assume the folder we are reading is a data folder.
+            # Example: directory_path = ...\B21_GaussMinigun
+            #          full_path = ...\B21_GaussMinigun\Materials\file.ext
+            #          rel_path = Materials\file.ext
+            #          Result = Data\Materials\file.ext
+            rel_path = os.path.relpath(full_path, directory_path)
+            rel_path = os.path.join("Data", rel_path)
 
             # Convert forward slashes to backslashes for Windows style
             rel_path = rel_path.replace('/', '\\')
@@ -167,29 +159,64 @@ class ArchlistWidget(BaseWidget):
         output_file = self.save_as.value.strip()
 
         if not directory_path:
-            QtWidgets.QMessageBox.warning(self, 'Validation', 'Please choose a source folder.')
+            InfoBar.warning(
+                title=self.tr('Validation'),
+                content=self.tr('Please choose a source folder.'),
+                duration=3000,
+                parent=self,
+            )
             return
         if not os.path.isdir(directory_path):
-            QtWidgets.QMessageBox.critical(self, 'Error', f"Directory does not exist:\n{directory_path}")
+            InfoBar.error(
+                title=self.tr('Error'),
+                content=self.tr(f"Directory does not exist:\n{directory_path}"),
+                duration=5000,
+                parent=self,
+            )
             return
         if not output_file:
-            QtWidgets.QMessageBox.warning(self, 'Validation', 'Please choose an output file path.')
+            InfoBar.warning(
+                title=self.tr('Validation'),
+                content=self.tr('Please choose an output file path.'),
+                duration=3000,
+                parent=self,
+            )
             return
         out_dir = os.path.dirname(output_file)
         if out_dir and not os.path.isdir(out_dir):
             try:
                 os.makedirs(out_dir, exist_ok=True)
             except Exception as e:
-                QtWidgets.QMessageBox.critical(self, 'Error', f"Cannot create output directory:\n{out_dir}\n\n{e}")
+                InfoBar.error(
+                    title=self.tr('Error'),
+                    content=self.tr(f"Cannot create output directory:\n{out_dir}\n\n{e}"),
+                    duration=5000,
+                    parent=self,
+                )
                 return
 
         try:
             ok = create_archlist(directory_path, output_file)
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, 'Error', f"Failed to create archlist file:\n{e}")
+            InfoBar.error(
+                title=self.tr('Error'),
+                content=self.tr(f"Failed to create archlist file:\n{e}"),
+                duration=5000,
+                parent=self,
+            )
             return
 
         if ok:
-            QtWidgets.QMessageBox.information(self, 'Success', f"Archlist file created successfully:\n{output_file}")
+            InfoBar.success(
+                title=self.tr('Success'),
+                content=self.tr(f"Archlist file created successfully:\n{output_file}"),
+                duration=3000,
+                parent=self,
+            )
         else:
-            QtWidgets.QMessageBox.warning(self, 'Result', 'No files found or operation failed.')
+            InfoBar.warning(
+                title=self.tr('Result'),
+                content=self.tr('No files found or operation failed.'),
+                duration=3000,
+                parent=self,
+            )

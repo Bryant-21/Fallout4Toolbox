@@ -4,10 +4,9 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QFileDialog, QGridLayout, QMessageBox, QVBoxLayout
+    QWidget, QFileDialog, QVBoxLayout
 )
 from qfluentwidgets import (
     PushSettingCard,
@@ -17,13 +16,12 @@ from qfluentwidgets import (
 
 )
 
-from help.quantize_help import QuantizeHelp
-from settings.quant_settings import QuantSettings
-from src.palette.palette_engine import reduce_colors_lab_de00_with_hue_balance, remap_rgb_array_to_representatives
+from src.help.quantize_help import QuantizeHelp
+from src.settings.quant_settings import QuantSettings
 from src.utils.appconfig import cfg
 from src.utils.cards import RadioSettingCard
 from src.utils.dds_utils import load_image
-from src.utils.helpers import BaseWidget
+from src.utils.helpers import BaseWidget, ImagePreviewPane
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from src.utils.palette_utils import quantize_image
@@ -53,11 +51,11 @@ class ImageQuantizerWidget(BaseWidget):
         )
 
         self.palette_size_card = RadioSettingCard(
-            cfg.ci_default_palette_size,
+            cfg.ci_default_quant_size,
             CustomIcons.WIDTH.icon(),
             self.tr("Colors"),
             self.tr("Number of colors to quantize to"),
-            texts=["256", "128", "64", "32", "16", "8"],
+            texts=["256", "192", "128", "96", "64", "32"],
             parent=self
         )
 
@@ -89,31 +87,15 @@ class ImageQuantizerWidget(BaseWidget):
 
         self.pick_image_card.clicked.connect(self._on_pick_image)
         self.addToFrame(self.pick_image_card)
-        self.boxLayout.addStretch(1)
-        # Two preview labels inside a grid
-        self.original_label = QLabel(self.tr("Original preview"))
-        self.original_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.original_label.setMinimumSize(550, 450)
-        self.original_label.setStyleSheet("border: 1px dashed gray;")
+        # Two previews side-by-side with resizable splitter
+        self.preview_pane = ImagePreviewPane(
+            self.tr("Original"),
+            self.tr("Quantized"),
+            parent=self,
+            minimum_canvas_size=450,
+        )
 
-        self.quantized_label = QLabel(self.tr("Quantized preview"))
-        self.quantized_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.quantized_label.setMinimumSize(450, 450)
-        self.quantized_label.setStyleSheet("border: 1px dashed gray;")
-
-        grid = QGridLayout()
-        # grid.setContentsMargins(8, 8, 8, 8)
-        # grid.setHorizontalSpacing(16)
-        # grid.setVerticalSpacing(8)
-        grid.addWidget(QLabel(self.tr("Original")), 0, 0)
-        grid.addWidget(QLabel(self.tr("Quantized")), 0, 1)
-        grid.addWidget(self.original_label, 1, 0)
-        grid.addWidget(self.quantized_label, 1, 1)
-
-        container = QWidget()
-        container.setLayout(grid)
-
-        self.addToFrame(container)
+        self.addToFrame(self.preview_pane)
 
         self.btn_quantize = PrimaryPushButton(icon=FIF.RIGHT_ARROW, text=self.tr("Quantize"))
         self.btn_quantize.clicked.connect(self._on_quantize)
@@ -150,16 +132,16 @@ class ImageQuantizerWidget(BaseWidget):
             logger.error(f"Error converting PIL to QPixmap: {e}")
             return QPixmap(100, 100)
 
-    def _display_on_label(self, img: Image.Image, label: QLabel):
+    def _display_on_label(self, img: Image.Image, is_original: bool = True):
+        """Display helper routing to the appropriate resizable canvas."""
+        target = self.preview_pane.left_canvas if is_original else self.preview_pane.right_canvas
+        self._display_on_canvas(img, target)
+
+    def _display_on_canvas(self, img: Image.Image, canvas):
+        if img is None or canvas is None:
+            return
         pix = self._pil_to_pixmap(img)
-        scaled = pix.scaled(
-            label.width() - 20,
-            label.height() - 20,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        label.setPixmap(scaled)
-        label.setText("")
+        canvas.set_image(pix)
 
     # ----------------------------- SLOTS ----------------------------- #
     def _on_pick_image(self):
@@ -177,17 +159,26 @@ class ImageQuantizerWidget(BaseWidget):
             self.src_cfg.value = file_path
             self.pick_image_card.setContent(file_path)
             self.original_pil = load_image(file_path)
-            self._display_on_label(self.original_pil, self.original_label)
+            self._display_on_label(self.original_pil, is_original=True)
             self.quantized_pil = None
-            self.quantized_label.setPixmap(QPixmap())
-            self.quantized_label.setText(self.tr("Quantized preview"))
+            self.preview_pane.right_canvas.set_image(None, placeholder=self.tr("Quantized preview"))
         except Exception as e:
             logger.error(f"Failed to load image: {e}")
-            QMessageBox.critical(self, self.tr("Error"), self.tr(f"Failed to load image: {e}"))
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Failed to load image: {e}"),
+                duration=5000,
+                parent=self,
+            )
 
     def _on_quantize(self):
         if not self.original_pil:
-            QMessageBox.warning(self, self.tr("Warning"), self.tr("Please select an image first."))
+            InfoBar.warning(
+                title=self.tr("Warning"),
+                content=self.tr("Please select an image first."),
+                duration=3000,
+                parent=self,
+            )
             return
         # Use method from cfg
         method = cfg.get(cfg.ci_default_quant_method).value if hasattr(cfg.get(cfg.ci_default_quant_method), 'value') else cfg.get(cfg.ci_default_quant_method)
@@ -216,7 +207,7 @@ class ImageQuantizerWidget(BaseWidget):
             target = int(cfg.get(cfg.ci_default_palette_size))
             before = len(unique)
             self.quantized_pil = rgb
-            self._display_on_label(self.quantized_pil, self.quantized_label)
+            self._display_on_label(self.quantized_pil, is_original=False)
             self.btn_save.setEnabled(True)
             InfoBar.success(
                 title=self.tr("Quantization complete"),
@@ -227,7 +218,12 @@ class ImageQuantizerWidget(BaseWidget):
         except Exception as e:
             traceback.print_exc()
             logger.error(f"Quantization failed: {e}")
-            QMessageBox.critical(self, self.tr("Error"), self.tr(f"Quantization failed: {e}"))
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Quantization failed: {e}"),
+                duration=5000,
+                parent=self,
+            )
         finally:
             p = getattr(self, 'parent', None)
             if p and hasattr(p, 'complete_loader'):
@@ -238,7 +234,12 @@ class ImageQuantizerWidget(BaseWidget):
 
     def _on_save(self):
         if not self.quantized_pil:
-            QMessageBox.information(self, self.tr("Info"), self.tr("No quantized image to save."))
+            InfoBar.info(
+                title=self.tr("Info"),
+                content=self.tr("No quantized image to save."),
+                duration=3000,
+                parent=self,
+            )
             return
         base_dir = os.path.dirname(self.current_image_path) if self.current_image_path else os.path.expanduser("~")
         base_name = os.path.splitext(os.path.basename(self.current_image_path or "image"))[0]
@@ -264,4 +265,9 @@ class ImageQuantizerWidget(BaseWidget):
             )
         except Exception as e:
             logger.error(f"Failed to save image: {e}")
-            QMessageBox.critical(self, self.tr("Error"), self.tr(f"Failed to save image: {e}"))
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Failed to save image: {e}"),
+                duration=5000,
+                parent=self,
+            )

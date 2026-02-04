@@ -1,13 +1,14 @@
 from typing import Union
 
-from PySide6.QtCore import Qt, QRect, QPropertyAnimation, QEasingCurve, QEvent
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette
-from PySide6.QtGui import QIcon, Qt
+from typing import Optional
+
+from PySide6.QtCore import Qt, QRect, QPropertyAnimation, QEasingCurve, QEvent, QSize
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette, QIcon, QPixmap, QImage
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QApplication, QLabel, QFrame, QSizePolicy
+    QWidget, QHBoxLayout, QVBoxLayout, QApplication, QLabel, QFrame, QSizePolicy, QLayout, QSplitter
 )
 from qfluentwidgets import NavigationInterface, FluentIconBase, NavigationItemPosition, NavigationTreeWidget, BodyLabel, \
-    qrouter, CommandBar, Action
+    qrouter, CommandBar, Action, ScrollArea, SplashScreen
 from qfluentwidgets import ToolButton, FluentIcon as FIF, isDarkTheme
 from qfluentwidgets.window.fluent_window import FluentWindowBase, FluentTitleBar
 
@@ -49,13 +50,21 @@ class BaseWidget(QFrame):
         self.buttons_layout = QHBoxLayout()
 
     def addButtonBarToBottom(self, widget: QWidget) -> None:
-        self.buttons_layout.addWidget(widget, stretch=1)
+        if widget:
+            self.buttons_layout.addWidget(widget, stretch=1)
+        else:
+            self.buttons_layout.addStretch()
+
         self.buttons_layout.addWidget(self.settings_button)
         self.buttons_layout.addWidget(self.help_button)
         self.boxLayout.addLayout(self.buttons_layout)
 
     def addToFrame(self, widget: QWidget) -> None:
         self.boxLayout.addWidget(widget)
+
+    def addToLayout(self, layout: QLayout) -> None:
+        self.boxLayout.addLayout(layout)
+
 
     def toggle_settings_drawer(self):
         self.settings_drawer.open_drawer()
@@ -64,12 +73,133 @@ class BaseWidget(QFrame):
         self.help_drawer.open_drawer()
 
 
+class ImageCanvas(QLabel):
+    """Lightweight image canvas that scales its pixmap to fit while keeping aspect ratio.
+
+    Inspired by the Palette Creator canvas: centered alignment, generous minimum size,
+    and resize-aware scaling. Supports QPixmap, QImage, or PIL.Image inputs via
+    :meth:`set_image`.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None, minimum_size: int = 400):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumSize(minimum_size, minimum_size)
+        self._orig_pixmap: Optional[QPixmap] = None
+        self._placeholder: str = self.tr("No preview")
+
+    # --------------------------- public API ---------------------------
+    def set_image(self, image, placeholder: Optional[str] = None) -> None:
+        """Assign an image.
+
+        Accepts QPixmap, QImage, or PIL.Image.Image. If ``image`` is falsy, a
+        placeholder text is shown instead.
+        """
+        if image is None:
+            self._orig_pixmap = None
+            self._placeholder = placeholder or self._placeholder
+            super().setPixmap(QPixmap())
+            self.setText(self._placeholder)
+            return
+
+        if isinstance(image, QPixmap):
+            pixmap = image
+        elif isinstance(image, QImage):
+            pixmap = QPixmap.fromImage(image)
+        else:
+            try:
+                from PIL import Image as PilImage  # type: ignore
+            except Exception:
+                PilImage = None
+
+            if PilImage is not None and isinstance(image, PilImage):
+                mode = 'RGBA' if image.mode in ('RGBA', 'LA', 'P') else 'RGB'
+                if image.mode != mode:
+                    image = image.convert(mode)
+                data = image.tobytes("raw", mode)
+                fmt = QImage.Format_RGBA8888 if mode == 'RGBA' else QImage.Format_RGB888
+                qimg = QImage(data, image.width, image.height, fmt)
+                pixmap = QPixmap.fromImage(qimg)
+            else:
+                raise TypeError("Unsupported image type for ImageCanvas")
+
+        self._placeholder = placeholder or self._placeholder
+        self._orig_pixmap = pixmap
+        self._update_scaled_pixmap()
+
+    def setPixmap(self, pixmap: QPixmap) -> None:  # type: ignore[override]
+        # keep behavior consistent when consumers call setPixmap directly
+        self._orig_pixmap = pixmap
+        self._update_scaled_pixmap()
+
+    # --------------------------- internals ---------------------------
+    def resizeEvent(self, event):  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        if self._orig_pixmap is not None:
+            self._update_scaled_pixmap()
+
+    def _update_scaled_pixmap(self):
+        if self._orig_pixmap is None:
+            super().setPixmap(QPixmap())
+            self.setText(self._placeholder)
+            return
+
+        ww, wh = max(1, self.width()), max(1, self.height())
+        scaled = self._orig_pixmap.scaled(ww, wh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.setText("")
+        super().setPixmap(scaled)
+
+
+class ImagePreviewPane(QWidget):
+    """Reusable splitter-based preview area with two resizable image canvases."""
+
+    def __init__(self, left_title: str, right_title: str, parent: Optional[QWidget] = None,
+                 orientation=Qt.Horizontal, minimum_canvas_size: int = 400):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        splitter = QSplitter(orientation, self)
+        splitter.setChildrenCollapsible(False)
+        layout.addWidget(splitter)
+
+        self.left_canvas = ImageCanvas(self, minimum_size=minimum_canvas_size)
+        self.right_canvas = ImageCanvas(self, minimum_size=minimum_canvas_size)
+
+        splitter.addWidget(self._build_panel(left_title, self.left_canvas))
+        splitter.addWidget(self._build_panel(right_title, self.right_canvas))
+
+    @staticmethod
+    def _build_panel(title: str, canvas: ImageCanvas) -> QWidget:
+        panel = QWidget()
+        v = QVBoxLayout(panel)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+
+        title_lbl = QLabel(title)
+        title_lbl.setAlignment(Qt.AlignCenter)
+
+        scroll = ScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(canvas)
+
+        v.addWidget(title_lbl)
+        v.addWidget(scroll, 1)
+        return panel
+
+
 class CustomFluentWindow(FluentWindowBase):
     """ Fluent window """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setTitleBar(FluentTitleBar(self))
+        self.icon_path = "resource/icon.ico"
+        self.icon = QIcon(self.icon_path)
+        self.setWindowIcon(self.icon)
+        self.splashScreen = SplashScreen(self.windowIcon(), self)
+        self.splashScreen.setIconSize(QSize(102, 102))
 
         self.navigationInterface = NavigationInterface(self, showReturnButton=True)
         self.widgetLayout = QVBoxLayout()
@@ -263,6 +393,8 @@ class RightDrawer(QFrame):
         # Ensure background is properly set
         self.updateBackground()
         self.current_widget = None
+        self.setVisible(False)
+
 
     def backgroundColor(self):
         return QColor(40, 40, 40) if isDarkTheme() else QColor(248, 248, 248)
@@ -332,7 +464,9 @@ class RightDrawer(QFrame):
     def open_drawer(self):
         """Animate drawer open"""
         self.raise_()
+        self.setVisible(True)
         self.show()
+
 
         if self._click_outside_to_close and not self._event_filter_installed:
             QApplication.instance().installEventFilter(self)
@@ -361,6 +495,7 @@ class RightDrawer(QFrame):
         self.animation.setEndValue(QRect(self.parent.width(), 0, self.drawer_width, self.parent.height()))
         self.animation.finished.connect(self._finalize_close)
         self.animation.start()
+        self.setVisible(False)
 
     def _finalize_close(self):
         """Clean up after closing animation"""

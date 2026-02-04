@@ -218,6 +218,9 @@ release/
 *.png
 *.json
 *.zip
+*.jpg
+*.jpeg
 
 resource/config.json
 /ChaiNNer/
+*.npz

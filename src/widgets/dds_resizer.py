@@ -14,7 +14,8 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushSettingCard,
     ConfigItem,
-    PushButton
+    PushButton,
+    InfoBar,
 )
 
 from src.help.dds_help import DDSHelp
@@ -529,16 +530,36 @@ class DDSResizerWindow(BaseWidget):
         sizes = self._parse_sizes(sizes_csv)
 
         if not src or not os.path.isdir(src):
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please select a valid source folder.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please select a valid source folder."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not out:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please choose an output folder.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please choose an output folder."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not sizes:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please enter at least one valid size (CSV).")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please enter at least one valid size (CSV)."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not per_size and len(sizes) > 1:
-            QtWidgets.QMessageBox.warning(self, "Validation", "When not creating per-size subfolders, provide only one size to avoid overwriting outputs.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("When not creating per-size subfolders, provide only one size to avoid overwriting outputs."),
+                duration=4000,
+                parent=self,
+            )
             return
 
         # Ensure output exists

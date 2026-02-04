@@ -3,20 +3,21 @@ from typing import Optional, Tuple, List
 
 from PIL import Image
 from PySide6.QtCore import QThread, Signal, Qt
-from PySide6.QtWidgets import QFileDialog, QWidget, QLabel, QGridLayout, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QWidget
 from qfluentwidgets import (
     PushSettingCard,
     PrimaryPushButton,
     PushButton,
     SwitchSettingCard,
     FluentIcon as FIF,
+    InfoBar,
 )
 
-from help.upscaler_help import UpscalerHelp
-from settings.basic_settings import BasicSettings
+from src.help.upscaler_help import UpscalerHelp
+from src.settings.basic_settings import BasicSettings
 from src.utils.appconfig import cfg
 from src.utils.chainner_utils import CHAINNER_EXE, run_chainner, resolve_model_path, get_or_download_model, upscale_directory_two_pass
-from src.utils.helpers import BaseWidget
+from src.utils.helpers import BaseWidget, ImagePreviewPane
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from src.utils.cards import ComboBoxSettingsCard
@@ -175,26 +176,9 @@ class UpscaleWidget(BaseWidget):
         self.chk_include_subdirs.checkedChanged.connect(self._on_include_changed)
         self.addToFrame(self.chk_include_subdirs)
 
-        # Preview
-        self.original_label = QLabel(self.tr("Original"))
-        self.original_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.original_label.setMinimumSize(450, 450)
-        self.original_label.setStyleSheet("border: 1px dashed gray;")
-
-        self.upscaled_label = QLabel(self.tr("Upscaled Preview"))
-        self.upscaled_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.upscaled_label.setMinimumSize(450, 450)
-        self.upscaled_label.setStyleSheet("border: 1px dashed gray;")
-
-        grid = QGridLayout()
-        grid.addWidget(QLabel(self.tr("Original")), 0, 0)
-        grid.addWidget(QLabel(self.tr("Upscaled")), 0, 1)
-        grid.addWidget(self.original_label, 1, 0)
-        grid.addWidget(self.upscaled_label, 1, 1)
-        container = QWidget()
-        container.setLayout(grid)
-        self.boxLayout.addStretch(1)
-        self.addToFrame(container)
+        # Preview (resizable split canvases)
+        self.preview_pane = ImagePreviewPane(self.tr("Original"), self.tr("Upscaled"), parent=self)
+        self.addToFrame(self.preview_pane)
 
         # Buttons
         self.btn_preview = PushButton(icon=FIF.ZOOM_IN, text=self.tr("Preview One"))
@@ -233,19 +217,22 @@ class UpscaleWidget(BaseWidget):
         if path:
             self.output_card.setContent(path)
 
-    def _display_on_label(self, image: Image.Image, label: QLabel):
-        from PySide6.QtGui import QImage, QPixmap
-        img = image.convert('RGBA')
-        w, h = img.size
-        data = img.tobytes('raw', 'RGBA')
-        qimg = QImage(data, w, h, QImage.Format.Format_RGBA8888)
-        pix = QPixmap.fromImage(qimg)
-        label.setPixmap(pix.scaled(label.width(), label.height(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+    def _set_preview_image(self, image: Image.Image, upscaled: bool = False):
+        try:
+            canvas = self.preview_pane.right_canvas if upscaled else self.preview_pane.left_canvas
+            canvas.set_image(image)
+        except Exception:
+            pass
 
     def _on_preview(self):
         folder = self.folder_card.contentLabel.text()
         if not folder:
-            QMessageBox.warning(self, "Validation", "Please select a folder first.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please select a folder first."),
+                duration=3000,
+                parent=self,
+            )
             return
         file, _ = QFileDialog.getOpenFileName(self, self.tr("Choose a texture"), folder,
                                               "Images (*.png *.jpg *.jpeg *.dds)")
@@ -254,9 +241,14 @@ class UpscaleWidget(BaseWidget):
         self.current_preview_file = file
         try:
             pil = load_image(file)
-            self._display_on_label(pil, self.original_label)
+            self._set_preview_image(pil, upscaled=False)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load image: {e}")
+            InfoBar.error(
+                title=self.tr("Error"),
+                content=self.tr(f"Failed to load image: {e}"),
+                duration=5000,
+                parent=self,
+            )
             return
         # Run worker just for this file
         self.worker = UpscaleWorker(folder, output_dir=None, preview_only=file, include_subdirs=self._include_subdirs)
@@ -272,7 +264,12 @@ class UpscaleWidget(BaseWidget):
     def _on_process(self):
         folder = self.folder_card.contentLabel.text()
         if not folder:
-            QMessageBox.warning(self, "Validation", "Please select a folder first.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please select a folder first."),
+                duration=3000,
+                parent=self,
+            )
             return
         out_dir = self.output_card.contentLabel.text() or None
         self.worker = UpscaleWorker(folder, output_dir=out_dir, include_subdirs=self._include_subdirs)
@@ -305,7 +302,7 @@ class UpscaleWidget(BaseWidget):
         if os.path.exists(out_path):
             try:
                 img = Image.open(out_path)
-                self._display_on_label(img, self.upscaled_label)
+                self._set_preview_image(img, upscaled=True)
             except Exception:
                 pass
 
@@ -314,13 +311,23 @@ class UpscaleWidget(BaseWidget):
         self.btn_preview.setEnabled(True)
         p = self.parent
         if p and hasattr(p, 'complete_loader'): p.complete_loader()
-        QMessageBox.information(self, "Done", f"Saved: {saved}\nSkipped: {skipped}\nFailed: {failed}")
+        InfoBar.success(
+            title=self.tr("Done"),
+            content=self.tr(f"Saved: {saved}\nSkipped: {skipped}\nFailed: {failed}"),
+            duration=4000,
+            parent=self,
+        )
 
     def _on_error(self, message: str):
         self.btn_process.setEnabled(True)
         self.btn_preview.setEnabled(True)
         p = self.parent
         if p and hasattr(p, 'complete_loader'): p.complete_loader()
-        QMessageBox.critical(self, "Error", message)
+        InfoBar.error(
+            title=self.tr("Error"),
+            content=self.tr(message),
+            duration=5000,
+            parent=self,
+        )
 
 

@@ -4,7 +4,6 @@ import sys
 import traceback
 
 from PySide6 import QtWidgets
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 from qfluentwidgets import FluentIcon as FIF, IndeterminateProgressRing, Dialog
 from qfluentwidgets import Theme, setTheme, NavigationItemPosition
@@ -18,8 +17,7 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
 
     def __init__(self):
         super().__init__()
-        self.icon_path = "resource/icon.ico"
-        self.icon = QIcon(self.icon_path)
+
         self.setupWindow()
         self.ring = IndeterminateProgressRing(self)
         self.ring.hide()
@@ -49,25 +47,34 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
             except Exception:
                 pass
 
-        from src.widgets.palette_generator import PaletteGenerator
+        #from src.widgets.palette_generator import PaletteGenerator
+        from src.widgets.palette_creator import PaletteLUTGenerator
+
         from src.widgets.create_archlist import ArchlistWidget
         from src.widgets.esp_template_renamer_tool import ESPTemplaterWidget
         from src.widgets.dds_resizer import DDSResizerWindow
+        from src.widgets.dds_inspector import DDSInspector
         from src.widgets.matfiles_copy import MaterialToolUI
+        from src.widgets.gun_fire_generator import GunFireGeneratorWidget
         from src.settings.settings_widget import MainSettings
         from src.widgets.subgraph_maker import SubGraphMakerWindow
-        # from src.widgets.bulk_palette_generator import BulkPaletteWidget
         from src.widgets.image_quantizer import ImageQuantizerWidget
-        from src.widgets.combine_palettes import CombinePaletteGroupsWidget
         from src.widgets.bulk_nif_edit import UVPaddingRemoverWidget
         from src.widgets.nif_edit import SingleModelUVPadWidget
-        # from src.widgets.texture_to_greyscale import ConvertToPaletteWidget
-        from src.widgets.add_colors_to_palette import AddColorsToPaletteWidget
-        from src.widgets.add_colors_to_single_palette import AddColorsToSinglePaletteWidget
         from src.widgets.palette_applier import PaletteApplier
+        from src.widgets.palette_adder import AddToPaletteWidget
+        from src.widgets.palette_adjuster import PaletteAdjuster
+        from src.widgets.bulk_palette_generator import BulkPaletteGeneratorWidget
+        from src.widgets.folder_renamer_widget import FolderRenamerWidget
+        from src.widgets.modlist_merger_widget import ModlistMergerWidget
+        from src.widgets.hkx_pack_widget import HKXPackWidget
+        from src.widgets.animation_annotation_extractor import AnnotationExtractorWidget
 
         self.addSubInterface(DDSResizerWindow(self, "DDS Bulk Resizer"), CustomIcons.BULK.icon(), "DDS Bulk Resizer",
                              NavigationItemPosition.TOP)
+        self.addSubInterface(DDSInspector(self, "DDS Inspector"), CustomIcons.IMAGE_VIEWER.icon(),
+                             "DDS Inspector", NavigationItemPosition.TOP)
+
         self.addSubInterface(ESPTemplaterWidget(self, "ESP Template Mod Maker"), CustomIcons.PUZZLE.icon(),
                              "ESP Template Mod Maker",
                              NavigationItemPosition.TOP)
@@ -77,26 +84,34 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         self.addSubInterface(MaterialToolUI(self, "Material File Copier"), CustomIcons.BGSM.icon(),
                              "Material File Copier",
                              NavigationItemPosition.TOP)
+        self.addSubInterface(GunFireGeneratorWidget(self, "Gun Fire Generator"), FIF.MUSIC,
+                             "Gun Fire Generator",
+                             NavigationItemPosition.TOP)
         self.addSubInterface(ArchlistWidget(self, "Archlist Creator"), FIF.PENCIL_INK, "Archlist Creator",
                              NavigationItemPosition.TOP)
+        self.addSubInterface(FolderRenamerWidget(self, "Folder Renamer"), CustomIcons.FOLDERRIGHT.icon(stroke=True),
+                             "Folder Renamer", NavigationItemPosition.TOP)
+        self.addSubInterface(ModlistMergerWidget(self, "Modlist Merger"), CustomIcons.COMBINE.icon(),
+                             "Modlist Merger", NavigationItemPosition.TOP)
+        self.addSubInterface(HKXPackWidget(self, "HKX Pack / Unpack"), CustomIcons.FILE_CODE.icon(),
+                             "HKX Pack / Unpack", NavigationItemPosition.TOP)
+        self.addSubInterface(AnnotationExtractorWidget(self, "Annotation Extractor"), CustomIcons.FILE_EDIT.icon(stroke=True),
+                             "Annotation Extractor", NavigationItemPosition.TOP)
         self.navigationInterface.addSeparator()
-        self.addSubInterface(PaletteGenerator(self, "Palette Generator"), CustomIcons.PALETTE.icon(),
+        self.addSubInterface(PaletteLUTGenerator(self, "Palette Generator"), CustomIcons.PALETTE_2.icon(stroke=True),
                              "Palette Generator", NavigationItemPosition.TOP)
-        # self.addSubInterface(ConvertToPaletteWidget(self, "Greyscale Creator"), CustomIcons.GREYSCALE.icon(),
-        #                      "Greyscale Creator", NavigationItemPosition.TOP)
-        self.addSubInterface(PaletteApplier(self, "Palette Preview"), FIF.SEARCH,
+        self.addSubInterface(BulkPaletteGeneratorWidget(self, "Bulk Palette Generator"), CustomIcons.BULK_EDIT.icon(),
+                             "Bulk Palette Generator", NavigationItemPosition.TOP)
+        self.addSubInterface(PaletteApplier(self, "Palette Preview"), CustomIcons.PREVIEW_FILE.icon(),
                              "Palette Preview", NavigationItemPosition.TOP)
-        self.addSubInterface(AddColorsToSinglePaletteWidget(self, "Auto Add to Palette"), CustomIcons.ADD_SOLID.icon(stroke=True),
-                             "Auto Add to Palette", NavigationItemPosition.TOP)
-        self.addSubInterface(AddColorsToPaletteWidget(self, "Add Colors To Palette"), CustomIcons.ADD_BASIC.icon(),
-                             "Add Colors To Palette", NavigationItemPosition.TOP)
-        self.addSubInterface(CombinePaletteGroupsWidget(self, "Palette Group Combiner (WIP)"),
-                             CustomIcons.COMBINE.icon(), "Palette Group Combiner (WIP)", NavigationItemPosition.TOP)
-        # self.addSubInterface(BulkPaletteWidget(self, "Texture Set Palette Generator (WIP)"), CustomIcons.SWATCH.icon(),
-        #                      "Texture Set Palette Generator (WIP)", NavigationItemPosition.TOP)
+        self.addSubInterface(AddToPaletteWidget(self, "Add To Palette"), CustomIcons.IMAGE_CIRCLE.icon(stroke=True),
+                             "Add To Palette", NavigationItemPosition.TOP)
+        self.addSubInterface(PaletteAdjuster(self, "Palette Adjuster"), CustomIcons.COLORS_SQUARE.icon(stroke=True),
+                             "Palette Adjuster", NavigationItemPosition.TOP)
         self.navigationInterface.addSeparator()
         self.addSubInterface(ImageQuantizerWidget(self, "Image Quantizer"), CustomIcons.QUANT.icon(), "Image Quantizer",
                              NavigationItemPosition.TOP)
+
 
         if CAPABILITIES["mip_flooding"]:
             from src.widgets.mip_flooding import MipFloodingWidget
@@ -112,6 +127,9 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
             self.addSubInterface(UpscaleWidget(self, "Upscale"), CustomIcons.ENHANCE.icon(), "Upscale", NavigationItemPosition.TOP)
 
         self.addSubInterface(MainSettings(self), FIF.SETTING, 'Settings', NavigationItemPosition.BOTTOM)
+
+        self.navigationInterface.expand()
+        self.splashScreen.finish()
 
 
     def show_progress(self):
@@ -132,7 +150,6 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
 
     def setupWindow(self):
         self.setWindowTitle(f'Fallout Tools - {VERSION}')
-        self.setWindowIcon(self.icon)
 
         screen = self.window().screen()
         desktop = screen.availableGeometry()

@@ -15,12 +15,12 @@ from qfluentwidgets import (
     SwitchSettingCard, PushButton,
 )
 
-from help.nif_help import NifHelp
-from settings.basic_settings import BasicSettings
+from src.help.nif_help import NifHelp
+from src.settings.basic_settings import BasicSettings
 from src.utils.appconfig import cfg
 from src.utils.capabilities import CAPABILITIES
 from src.utils.cards import ComboBoxSettingsCard
-from src.utils.helpers import BaseWidget
+from src.utils.helpers import BaseWidget, ImagePreviewPane, ImageCanvas
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from src.utils.dds_utils import load_image
@@ -29,42 +29,13 @@ from src.utils.imageutils import dilation_fill_static
 if CAPABILITIES["mip_flooding"]:
     from src.utils.mipflooding import _apply_mip_flooding_to_png
 
-from src.utils.nifutils import load_nif, rasterize_uv_mask
+from src.utils.nifutils import load_nif, rasterize_uv_mask, collect_shape_uv_sets, build_uv_entries_for_nif, maybe_fix_quarter_uv
 from src.utils.chainner_utils import run_chainner, get_or_download_model
 
 
 def _collect_shape_uv_sets(shape: Any) -> List[List[Tuple[float, float]]]:
-    """
-    Return a list of UV sets for the given shape.
-    Tries multiple attribute layouts to be robust against nifly variations.
-    """
-    # Common case: shape.uvs is a flat list for the primary set
-    uvs_attr = getattr(shape, 'uvs', None)
-    if uvs_attr is None:
-        return []
-
-    # If it's already a list of (u,v) tuples → single set
-    if len(uvs_attr) > 0 and isinstance(uvs_attr[0], (tuple, list)) and \
-            len(uvs_attr[0]) == 2 and not isinstance(uvs_attr[0][0], (tuple, list)):
-        return [list(map(lambda p: (float(p[0]), float(p[1])), uvs_attr))]
-
-    # If it's a list of sets (list[list[(u,v)]])
-    if len(uvs_attr) > 0 and isinstance(uvs_attr[0], (list, tuple)) and \
-            len(uvs_attr[0]) > 0 and isinstance(uvs_attr[0][0], (list, tuple)):
-        sets: List[List[Tuple[float, float]]] = []
-        for s in uvs_attr:
-            sets.append([ (float(p[0]), float(p[1])) for p in s ])
-        return sets
-
-    # Some nifly builds expose shape.uv_sets
-    uv_sets = getattr(shape, 'uv_sets', None)
-    if uv_sets:
-        sets2: List[List[Tuple[float, float]]] = []
-        for s in uv_sets:
-            sets2.append([ (float(p[0]), float(p[1])) for p in s ])
-        return sets2
-
-    return []
+    """Backwards wrapper; kept for compatibility while delegating to nifutils."""
+    return collect_shape_uv_sets(shape)
 
 
 def _read_uvw_file(path: Path) -> Tuple[List[Tuple[float, float]], List[Tuple[int, int, int]]]:
@@ -118,7 +89,7 @@ class SingleModelUVPadWidget(BaseWidget):
 
         # UV set chooser (populated after model load)
         self.card_uv_set = ComboBoxSettingsCard(
-            icon=FIF.GLOBE,
+            icon=CustomIcons.COPY_POLY.icon(),
             title=self.tr("UV Set"),
             content=self.tr("If the model has multiple UV sets, choose which to use."),
         )
@@ -142,16 +113,13 @@ class SingleModelUVPadWidget(BaseWidget):
         self.btn_preview = PushButton(icon=FIF.ZOOM_IN, text="Preview")
         self.btn_save = PrimaryPushButton(icon=FIF.SAVE, text="Save")
 
-        # Match nif_texture_edit dual preview layout
-        self.original_label = QLabel(self.tr("Original"))
-        self.original_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.original_label.setMinimumSize(450, 450)
-        self.original_label.setStyleSheet("border: 1px dashed gray;")
-
-        self.masked_label = QLabel(self.tr("No-Padding Preview"))
-        self.masked_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.masked_label.setMinimumSize(450, 450)
-        self.masked_label.setStyleSheet("border: 1px dashed gray;")
+        # Match nif_texture_edit dual preview layout using resizable splitter
+        self.preview_pane = ImagePreviewPane(
+            self.tr("Original"),
+            self.tr("No-Padding"),
+            parent=self,
+            minimum_canvas_size=450,
+        )
 
         self.addToFrame(self.card_pick_model)
         self.addToFrame(self.card_pick_texture)
@@ -173,21 +141,13 @@ class SingleModelUVPadWidget(BaseWidget):
         self.fix_scaled_uv = SwitchSettingCard(
             configItem=cfg.scale_uvs,
             title=self.tr("Scale UV"),
-            icon=CustomIcons.ENHANCE.icon(),
+            icon=CustomIcons.FIT.icon(),
             content=self.tr("Sometimes needed, not sure why."),
         )
 
         self.addToFrame(self.fix_scaled_uv)
 
-        grid = QGridLayout()
-        grid.addWidget(QLabel(self.tr("Original")), 0, 0)
-        grid.addWidget(QLabel(self.tr("No-Padding")), 0, 1)
-        grid.addWidget(self.original_label, 1, 0)
-        grid.addWidget(self.masked_label, 1, 1)
-        container = QWidget()
-        container.setLayout(grid)
-        self.boxLayout.addStretch(1)
-        self.addToFrame(container)
+        self.addToFrame(self.preview_pane)
 
         self.buttons_layout.addWidget(self.btn_preview, stretch=1)
         self.addButtonBarToBottom(self.btn_save)
@@ -236,36 +196,7 @@ class SingleModelUVPadWidget(BaseWidget):
     # ----- Core logic -----
     def _refresh_uv_set_count(self) -> None:
         # Build user-friendly list of UV sets grouped by diffuse texture name
-        self._uv_entries = []
-        try:
-            if self.model_path and self.model_path.suffix.lower() == '.nif':
-                nif = load_nif(self.model_path)
-                shapes = list(getattr(nif, 'shapes', []))
-                # key: (diffuse_str, uv_index) -> list[int] shape indices
-                groups = {}
-                for si, shape in enumerate(shapes):
-                    sets = _collect_shape_uv_sets(shape)
-                    if not sets:
-                        continue
-                    tex_slots = shape.textures if hasattr(shape, 'textures') else None
-                    if not tex_slots:
-                        continue
-                    if not tex_slots.get('Diffuse'):
-                        continue
-                    diffuse = str(tex_slots.get('Diffuse'))
-                    for ui, _ in enumerate(sets):
-                        key = (diffuse, ui)
-                        if key not in groups:
-                            groups[key] = []
-                        groups[key].append(si)
-                # Populate entries: (shape_indices, uv_index, label)
-                for (diffuse, ui), shape_indices in groups.items():
-                    label = f"{diffuse} - UV {ui}"
-                    self._uv_entries.append((shape_indices, ui, label))
-        except Exception as e:
-            traceback.print_exc()
-            logger.warning(f"Failed to inspect UV sets: {e}")
-            self._uv_entries = []
+        self._uv_entries = build_uv_entries_for_nif(self.model_path) if self.model_path else []
         # repopulate combobox
         self.card_uv_set.combox.clear()
         if self._uv_entries:
@@ -314,7 +245,7 @@ class SingleModelUVPadWidget(BaseWidget):
                             continue
                         uvs = sets[uv_index]
                         if(cfg.get(cfg.scale_uvs)):
-                            uvs = self._maybe_fix_quarter_uv(uvs)
+                            uvs = maybe_fix_quarter_uv(uvs)
                         mask = rasterize_uv_mask(tex_w, tex_h, uvs, tris, wrap=True)
                         combined = _IC.lighter(combined, mask)
                         any_mask = True
@@ -383,16 +314,16 @@ class SingleModelUVPadWidget(BaseWidget):
                 return
             try:
                 orig = load_image(str(self.texture_path), 'RGBA')
-                self._display_on_label(orig, self.original_label)
+                self._display_on_label(orig, self.preview_pane.left_canvas)
             except Exception as e:
                 InfoBar.error(self.tr("Failed to load texture"), str(e), parent=self)
                 return
 
             out = self._process()
             if out is None:
-                self.masked_label.setText(self.tr("No mask produced"))
+                self.preview_pane.right_canvas.setText(self.tr("No mask produced"))
                 return
-            self._display_on_label(out, self.masked_label)
+            self._display_on_label(out, self.preview_pane.right_canvas)
         finally:
             p = getattr(self, 'parent', None)
             if p and hasattr(p, 'complete_loader'):
@@ -466,20 +397,25 @@ class SingleModelUVPadWidget(BaseWidget):
                     pass
 
 
-    def _display_on_label(self, image: Image.Image, label: QLabel) -> None:
-        """Display a PIL Image on a QLabel, scaled to fit while keeping aspect ratio."""
+    def _display_on_label(self, image: Image.Image, label: ImageCanvas) -> None:
+        """Display a PIL Image on a resizable canvas, falling back to label scaling."""
+        if image is None:
+            label.clear()
+            return
         try:
-            from PySide6.QtGui import QImage, QPixmap
-            rgba = image.convert('RGBA')
-            w, h = rgba.size
-            data = rgba.tobytes('raw', 'RGBA')
-            qimg = QImage(data, w, h, QImage.Format.Format_RGBA8888)
-            pixmap = QPixmap.fromImage(qimg)
-            label.setPixmap(pixmap.scaled(
-                label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            ))
+            label.set_image(image)
         except Exception:
-            # As a fallback, set text
-            label.setText(self.tr("Preview unavailable"))
+            try:
+                from PySide6.QtGui import QImage, QPixmap
+                rgba = image.convert('RGBA')
+                w, h = rgba.size
+                data = rgba.tobytes('raw', 'RGBA')
+                qimg = QImage(data, w, h, QImage.Format.Format_RGBA8888)
+                pixmap = QPixmap.fromImage(qimg)
+                label.setPixmap(pixmap.scaled(
+                    label.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                ))
+            except Exception:
+                label.setText(self.tr("Preview unavailable"))

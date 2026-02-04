@@ -5,15 +5,17 @@ import numpy as np
 from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QImage
-from PySide6.QtWidgets import QWidget, QLabel, QFileDialog
-from qfluentwidgets import PushSettingCard, RangeSettingCard
-from qfluentwidgets import RangeConfigItem, RangeValidator
+from PySide6.QtWidgets import QWidget, QFileDialog, QHBoxLayout
+from qfluentwidgets import RangeConfigItem, RangeValidator, FluentIcon as FIF, PushSettingCard, RangeSettingCard
 
 from src.utils.dds_utils import load_image
-from src.utils.helpers import BaseWidget
+from src.utils.helpers import BaseWidget, ImagePreviewPane, ImageCanvas
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
 from src.utils.filesystem_utils import get_app_root
+from src.utils.palette_utils import apply_palette_to_greyscale
+from src.utils.appconfig import cfg
+from src.utils.cards import ComboBoxSettingsCard
 
 
 class PaletteApplier(BaseWidget):
@@ -29,15 +31,22 @@ class PaletteApplier(BaseWidget):
 
         # State
         self.palette_path: Optional[str] = None
+        # User-selected greyscale image (left preview)
         self.greyscale_path: Optional[str] = None
         self.palette_img: Optional[Image.Image] = None  # RGB
         self.greyscale_img: Optional[Image.Image] = None  # L (8-bit)
+        # Fixed reference greyscale (always grayscale_4k_cutout, right preview)
+        self.greyscale_ref_path: Optional[str] = None
+        self.greyscale_ref_img: Optional[Image.Image] = None  # L (8-bit)
+
+        row_1 = QHBoxLayout(self)
+        row_2 = QHBoxLayout(self)
 
         # Cards
         self.palette_card = PushSettingCard(
             self.tr("Palette Texture"),
-            CustomIcons.PALETTE.icon() if hasattr(CustomIcons, 'PALETTE') else CustomIcons.IMAGE.icon(),
-            self.tr("Select a color palette image (width = palette size; row applies to greyscale)"),
+            CustomIcons.PALETTE_2.icon(stroke=True) if hasattr(CustomIcons, 'PALETTE') else CustomIcons.IMAGE.icon(),
+            self.tr("Select Palette Image"),
             self.tr("No palette selected")
         )
         self.palette_card.clicked.connect(self.on_select_palette)
@@ -45,7 +54,7 @@ class PaletteApplier(BaseWidget):
         self.greyscale_card = PushSettingCard(
             self.tr("Greyscale Image"),
             CustomIcons.GREYSCALE.icon() if hasattr(CustomIcons, 'GREYSCALE') else CustomIcons.IMAGE.icon(),
-            self.tr("Select a greyscale image to colorize using the palette row"),
+            self.tr("Select a Greyscale Image"),
             self.tr("No greyscale selected")
         )
         self.greyscale_card.clicked.connect(self.on_select_greyscale)
@@ -54,34 +63,68 @@ class PaletteApplier(BaseWidget):
         self.row_index_cfg = RangeConfigItem("palette_applier", "row_index", 0, RangeValidator(0, 256))
         self.row_card = RangeSettingCard(
             self.row_index_cfg,
-            CustomIcons.HEIGHT.icon() if hasattr(CustomIcons, 'HEIGHT') else CustomIcons.SPARK.icon(),
+            CustomIcons.ROWS.icon(stroke=True),
             self.tr("Palette Pixel Row"),
+            self.tr("Where to get the colors"),
         )
 
         self.row_card.valueChanged.connect(self.update_preview)
 
-        # Preview
-        self.preview_label = QLabel(self.tr("Preview will appear here"))
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumSize(400, 400)
+        # Previews: left = selected greyscale, right = fixed grayscale_4k_cutout reference
+        self.preview_pane = ImagePreviewPane(
+            self.tr("Selected texture preview"),
+            self.tr("grayscale_4k_cutout reference"),
+            parent=self,
+            minimum_canvas_size=450,
+        )
 
+        self.card_uv_set = ComboBoxSettingsCard(
+            icon=FIF.FILTER,
+            title=self.tr("Filter Mode"),
+            content=self.tr(
+                "The game applies a bilinear filter onto palettes from what I can tell. This causes some color bleeding"),
+            configItem=cfg.ci_palette_filter_type
+        )
+
+        cfg.ci_palette_filter_type.valueChanged.connect(self.update_preview)
 
         # Layout
-        self.addToFrame(self.palette_card)
-        self.addToFrame(self.greyscale_card)
-        self.addToFrame(self.row_card)
-        self.addToFrame(self.preview_label)
+        row_1.addWidget(self.palette_card)
+        row_1.addWidget(self.greyscale_card)
+        row_2.addWidget(self.row_card)
+        row_2.addWidget(self.card_uv_set)
+
+        self.addToLayout(row_1)
+        self.addToLayout(row_2)
+
+        # Two previews side-by-side
+        self.addToFrame(self.preview_pane)
+
+        # Ensure the fixed reference greyscale is loaded up-front
+        self._ensure_default_greyscale_loaded()
 
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Rescale preview when the widget is resized
-        if self.preview_label.pixmap() is not None:
-            self.update_preview()
+        # Rescale previews when the widget is resized
+        self.update_preview()
 
     # -------------- Events --------------
     def on_select_palette(self):
         path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Palette"), "", self.tr("Images (*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds)"))
+        if not path:
+            return
+        self.load_palette_from_path(path)
+
+    def on_select_greyscale(self):
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Greyscale Image"), "", self.tr("Images (*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds)"))
+        if not path:
+            return
+        self.load_greyscale_from_path(path)
+
+    # -------------- Helpers --------------
+    def load_palette_from_path(self, path: str) -> None:
+        """Programmatically load a palette image from a file path and refresh preview."""
         if not path:
             return
         try:
@@ -94,36 +137,15 @@ class PaletteApplier(BaseWidget):
         self.palette_img = img
         w, h = img.size
         self.palette_card.setContent(self.tr(f"{os.path.basename(path)} | {w}x{h}"))
-        # Auto-load default greyscale if none is selected yet
-        if self.greyscale_img is None:
-            try:
-                # Resolve path to resource/grayscale_4k_cutout.png relative to repo root
-                here = os.path.dirname(__file__)
-                default_grey_path = os.path.normpath(os.path.join(get_app_root(), 'resource', 'grayscale_4k_cutout.png'))
-                if os.path.isfile(default_grey_path):
-                    img_g = load_image(default_grey_path, f='L')
-                    self.greyscale_path = default_grey_path
-                    self.greyscale_img = img_g
-                    gw, gh = img_g.size
-                    self.greyscale_card.setContent(self.tr(f"{os.path.basename(default_grey_path)} | {gw}x{gh} (L)"))
-                    logger.info("Auto-loaded default greyscale image: %s", default_grey_path)
-                    # Try to analyze greyscale automatically, but don't interrupt flow if it fails
-                    try:
-                        self.on_analyze_greyscale()
-                    except Exception:
-                        logger.exception("Greyscale analysis post-auto-load failed")
-                else:
-                    logger.warning("Default greyscale not found at: %s", default_grey_path)
-            except Exception as e:
-                logger.exception("Failed to auto-load default greyscale image: %s", e)
+        # Make sure the fixed reference greyscale is available
+        self._ensure_default_greyscale_loaded()
         self.update_preview()
 
-    def on_select_greyscale(self):
-        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Greyscale Image"), "", self.tr("Images (*.png *.jpg *.jpeg *.bmp *.tga *.webp *.dds)"))
+    def load_greyscale_from_path(self, path: str) -> None:
+        """Programmatically load a greyscale image from a file path and refresh preview."""
         if not path:
             return
         try:
-            # Load (supports DDS) and convert to L (8-bit)
             img = load_image(path, f='L')
         except Exception as e:
             logger.exception("Failed to open greyscale image: %s", e)
@@ -139,20 +161,52 @@ class PaletteApplier(BaseWidget):
             self.on_analyze_greyscale()
         except Exception:
             logger.exception("Greyscale analysis post-select failed")
+    def _ensure_default_greyscale_loaded(self):
+        """Ensure the fixed reference greyscale (grayscale_4k_cutout) is loaded for the right preview."""
+        if self.greyscale_ref_img is not None:
+            return
+        try:
+            default_grey_path = os.path.normpath(os.path.join(get_app_root(), 'resource', 'grayscale_4k_cutout.png'))
+            if os.path.isfile(default_grey_path):
+                img_g = load_image(default_grey_path, f='L')
+                self.greyscale_ref_path = default_grey_path
+                self.greyscale_ref_img = img_g
+                logger.info("Loaded fixed reference greyscale image for palette applier: %s", default_grey_path)
+            else:
+                logger.warning("Fixed reference greyscale not found at: %s", default_grey_path)
+        except Exception as e:
+            logger.exception("Failed to load fixed reference greyscale image: %s", e)
 
     # -------------- Core logic --------------
     def update_preview(self):
-        if self.palette_img is None or self.greyscale_img is None:
+        """Update both left (selected greyscale) and right (fixed reference) previews."""
+        if self.palette_img is None:
             return
+
         try:
             row = self.get_selected_palette_row()
-            colored = self.apply_row_to_greyscale(row, self.greyscale_img)
-            self.update_preview_label(colored)
+
+            # Left: user-selected greyscale image, if any
+            if self.greyscale_img is not None:
+                try:
+                    colored_left = apply_palette_to_greyscale(self.palette_img, self.greyscale_img, palette_row=row)
+                    self.update_preview_label(self.preview_pane.left_canvas, colored_left)
+                except Exception:
+                    logger.exception("Failed to update left preview")
+
+            # Right: fixed grayscale_4k_cutout reference
+            if self.greyscale_ref_img is not None:
+                try:
+                    colored_right = apply_palette_to_greyscale(self.palette_img, self.greyscale_ref_img, palette_row=row)
+                    self.update_preview_label(self.preview_pane.right_canvas, colored_right)
+                except Exception:
+                    logger.exception("Failed to update right preview")
         except Exception as e:
             logger.exception("Failed to update preview: %s", e)
 
     def on_analyze_greyscale(self):
         """Analyze which greyscale values 0-255 are present in the selected greyscale image and log the report."""
+        # Analyze the currently selected greyscale image (left preview source)
         if self.greyscale_img is None:
             logger.warning("Greyscale analysis skipped: no greyscale image selected.")
             return
@@ -239,35 +293,17 @@ class PaletteApplier(BaseWidget):
             row_pixels = np.expand_dims(row_pixels, axis=0)
         return row_pixels.astype(np.uint8)
 
-    @staticmethod
-    def apply_row_to_greyscale(palette_row: np.ndarray, grey_img: Image.Image) -> Image.Image:
-        # Map grey 0..255 to indices 0..(palette_width-1)
-        pw = palette_row.shape[0]
-        # Build lookup of 256 x 3
-        if pw == 256:
-            lut = palette_row
-        else:
-            # Interpolate along the row to 256 entries
-            x = np.linspace(0, pw - 1, num=pw)
-            xi = np.linspace(0, pw - 1, num=256)
-            # Interpolate each channel
-            lut = np.stack([
-                np.interp(xi, x, palette_row[:, c]).astype(np.uint8) for c in range(3)
-            ], axis=1)
-        # Apply LUT
-        g = np.array(grey_img, dtype=np.uint8)
-        colored = lut[g]  # shape (H, W, 3)
-        return Image.fromarray(colored, mode='RGB')
-
-    def update_preview_label(self, pil_image: Image.Image):
-        # Fit image into label while keeping aspect ratio
+    def update_preview_label(self, label: ImageCanvas, pil_image: Image.Image):
+        """Fit image into the given label while keeping aspect ratio."""
+        if label is None:
+            return
         qimg = self.pil_to_qimage(pil_image)
         pix = QPixmap.fromImage(qimg)
         # Scale to label size
-        target_w = max(1, self.preview_label.width())
-        target_h = max(1, self.preview_label.height())
+        target_w = max(1, label.width())
+        target_h = max(1, label.height())
         pix = pix.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.preview_label.setPixmap(pix)
+        label.setPixmap(pix)
 
     @staticmethod
     def pil_to_qimage(img: Image.Image) -> QImage:

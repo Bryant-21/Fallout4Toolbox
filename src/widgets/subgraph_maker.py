@@ -1,5 +1,5 @@
 import os
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 from PySide6 import QtCore, QtWidgets
 from PySide6.QtWidgets import QDialog, QVBoxLayout as QVBoxLayoutQt, QLabel, QDialogButtonBox
@@ -8,16 +8,17 @@ from qfluentwidgets import (
     PrimaryPushButton,
     SwitchSettingCard,
     ConfigItem,
+    InfoBar,
 )
 
-from help.subgraph_help import SubgraphHelp
-from settings.basic_settings import BasicSettings
-from src.utils.cards import TextSettingCard
-from src.utils.helpers import BaseWidget
-from src.utils.logging_utils import logger
+from src.help.subgraph_help import SubgraphHelp
+from src.settings.basic_settings import BasicSettings
 from src.utils.appconfig import cfg
+from src.utils.cards import TextSettingCard
 from src.utils.filesystem_utils import get_app_root
+from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
+from src.utils.logging_utils import logger
 
 RESOURCE_FILES = {
     'Human': 'SubGraphData_HumanRaceSubGraphData.txt',
@@ -106,11 +107,15 @@ class SubGraphWorker(QtCore.QThread):
 
             folder_tokens = self._split_csv_preserve(folders_csv)
             folder_targets = self._split_csv_preserve(self.target_folder)
-            match_indices: List[int] = []
+            
+            # match_indices will now store (token_index, segment_index)
+            match_indices: List[Tuple[int, int]] = []
             for i, entry in enumerate(folder_tokens):
-                last_seg = entry.replace('/', '\\').split('\\')[-1]
-                if last_seg in folder_targets:
-                    match_indices.append(i)
+                parts = entry.replace('/', '\\').split('\\')
+                for s_idx, seg in enumerate(parts):
+                    if seg in folder_targets:
+                        match_indices.append((i, s_idx))
+                        break # Only match once per entry
 
             if not match_indices:
                 return line, False
@@ -122,14 +127,14 @@ class SubGraphWorker(QtCore.QThread):
             # Depending on mode, either prepend new entries before matches or replace matches
             if self.prepend_mode:
                 # For each matching folder entry, insert a new entry before it with the same parent path
-                # but with last segment replaced by new_folder
+                # but with matched segment replaced by new_folder
                 # We'll iterate indices in increasing order but account for growth by offset
                 offset = 0
-                for idx in match_indices:
+                for idx, seg_idx in match_indices:
                     real_idx = idx + offset
                     entry = folder_tokens[real_idx]
                     parts = entry.replace('/', '\\').split('\\')
-                    parts[-1] = self.new_folder
+                    parts[seg_idx] = self.new_folder
                     new_entry = '\\'.join(parts)
                     # Avoid immediate duplicate at insertion point
                     if real_idx - 1 >= 0 and folder_tokens[real_idx - 1] == new_entry:
@@ -138,11 +143,11 @@ class SubGraphWorker(QtCore.QThread):
                         folder_tokens.insert(real_idx, new_entry)
                         offset += 1
             else:
-                # Replace matching folder entries in-place with new_folder path under the same parent
-                for idx in match_indices:
+                # Replace matching folder entries in-place with new_folder path
+                for idx, seg_idx in match_indices:
                     entry = folder_tokens[idx]
                     parts = entry.replace('/', '\\').split('\\')
-                    parts[-1] = self.new_folder
+                    parts[seg_idx] = self.new_folder
                     new_entry = '\\'.join(parts)
                     folder_tokens[idx] = new_entry
 
@@ -190,8 +195,7 @@ class SubGraphWorker(QtCore.QThread):
                 nf_label = (self.new_folder or '').strip().replace(',', '+').replace(' ', '')
                 if not nf_label:
                     nf_label = 'new'
-                mode_label = 'additive' if self.prepend_mode else 'replace'
-                out_name = f"{name_no_ext}_{nf_label}_{mode_label}.txt"
+                out_name = f"{name_no_ext}_{nf_label}_additive.txt"
                 out_path = os.path.join(out_dir, out_name)
 
                 if not os.path.isfile(in_path):
@@ -377,19 +381,44 @@ class SubGraphMakerWindow(BaseWidget):
 
         # Validate
         if not races:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please select at least one race to process.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please select at least one race to process."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not target_anim:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please enter Target Animation Keyword.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please enter Target Animation Keyword."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not new_anim:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please enter New Keyword Animation.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please enter New Keyword Animation."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not target_folder:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please enter Target Folder.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please enter Target Folder."),
+                duration=3000,
+                parent=self,
+            )
             return
         if not new_folder:
-            QtWidgets.QMessageBox.warning(self, "Validation", "Please enter New Folder.")
+            InfoBar.warning(
+                title=self.tr("Validation"),
+                content=self.tr("Please enter New Folder."),
+                duration=3000,
+                parent=self,
+            )
             return
 
         p = getattr(self, 'parent', None)
