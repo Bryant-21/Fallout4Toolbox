@@ -1,17 +1,27 @@
 import os
 from enum import Enum
 
-from qfluentwidgets import ConfigItem, QConfig, qconfig, ConfigValidator, RangeValidator, \
-    RangeConfigItem, BoolValidator, EnumSerializer, OptionsValidator, OptionsConfigItem, ColorConfigItem
+from qfluentwidgets import (
+    ConfigItem,
+    QConfig,
+    qconfig,
+    ConfigValidator,
+    RangeValidator,
+    RangeConfigItem,
+    BoolValidator,
+    EnumSerializer,
+    OptionsValidator,
+    OptionsConfigItem,
+    ColorConfigItem,
+)
 
 from src.utils.filesystem_utils import get_app_root
 
 
 class FileValidator(ConfigValidator):
-
     def __init__(self, allowed_file_types=None):
         if allowed_file_types is None:
-            allowed_file_types = ['csv', 'txt']
+            allowed_file_types = ["csv", "txt"]
         self.allowed_file_types = allowed_file_types
 
     """ File validator """
@@ -25,31 +35,37 @@ class FileValidator(ConfigValidator):
 
 
 class QuantAlgorithm(Enum):
-    median_cut= "median_cut"
-    max_coverage= "max_coverage"
-    fast_octree= "fast_octree"
+    median_cut = "median_cut"
+    max_coverage = "max_coverage"
+    fast_octree = "fast_octree"
     libimagequant = "libimagequant"
-    kmeans_adaptive= "kmeans_adaptive"
-    uniform= "uniform"
+    kmeans_adaptive = "kmeans_adaptive"
+    uniform = "uniform"
+
 
 class ResType(Enum):
-    Original= "Original"
+    Original = "Original"
     FOUR_K = 4096
     TWO_K = 2048
     ONE_K = 1024
     FIVE_TWELVE = 512
 
 
-
 class Config(QConfig):
+    # shared
+    threads_cfg = RangeConfigItem(
+        "settings",
+        "threads",
+        max(1, os.cpu_count() or 1),
+        RangeValidator(1, os.cpu_count()),
+    )
 
-    #shared
-    threads_cfg = RangeConfigItem("settings", "threads", max(1, os.cpu_count() or 1), RangeValidator(1, os.cpu_count()))
-
-    #DDS
+    # DDS
     sizes_cfg = ConfigItem("dds_resizer", "sizes", "1024,2048")
     ignore_cfg = ConfigItem("dds_resizer", "ignore_dirs", "")
-    per_size_cfg = ConfigItem("dds_resizer", "per_size_subfolders", True, BoolValidator())
+    per_size_cfg = ConfigItem(
+        "dds_resizer", "per_size_subfolders", True, BoolValidator()
+    )
     no_upscale_cfg = ConfigItem("dds_resizer", "no_upscale", True, BoolValidator())
     mips_cfg = ConfigItem("dds_resizer", "generate_mips", True, BoolValidator())
     bc3_cfg = ConfigItem("dds_resizer", "convert_to_bc3", False, BoolValidator())
@@ -57,60 +73,128 @@ class Config(QConfig):
         "dds_resizer",
         "downscale_method",
         "texconv",
-        OptionsValidator(["texconv", "nearest", "bilinear", "bicubic", "lanczos", "box", "hamming"])
+        OptionsValidator(
+            ["texconv", "nearest", "bilinear", "bicubic", "lanczos", "box", "hamming"]
+        ),
     )
 
-    #Palette
-    ci_default_quant_method = OptionsConfigItem("palette", "default_quantization_method",
-                                                     default=QuantAlgorithm.libimagequant,
-                                                     validator=OptionsValidator(QuantAlgorithm),
-                                                     serializer=EnumSerializer(QuantAlgorithm))
-    ci_default_palette_size = OptionsConfigItem("palette", "default_palette_size", 128,
-                                                 OptionsValidator([256, 128, 64, 32]))
-    ci_default_quant_size = OptionsConfigItem("palette", "default_quant_size", 128,
-                                                 OptionsValidator([256, 192, 128, 96, 64, 32]))
-    ci_default_working_res = OptionsConfigItem("palette", "default_working_resolution",
-                                                    default=ResType.Original,
-                                                    validator=OptionsValidator(ResType),
-                                                    serializer=EnumSerializer(ResType))
+    # Palette
+    ci_default_quant_method = OptionsConfigItem(
+        "palette",
+        "default_quantization_method",
+        default=QuantAlgorithm.libimagequant,
+        validator=OptionsValidator(QuantAlgorithm),
+        serializer=EnumSerializer(QuantAlgorithm),
+    )
+    ci_default_palette_size = OptionsConfigItem(
+        "palette", "default_palette_size", 128, OptionsValidator([256, 128, 64, 32])
+    )
+    ci_default_quant_size = OptionsConfigItem(
+        "palette",
+        "default_quant_size",
+        128,
+        OptionsValidator([256, 192, 128, 96, 64, 32]),
+    )
+    ci_default_working_res = OptionsConfigItem(
+        "palette",
+        "default_working_resolution",
+        default=ResType.Original,
+        validator=OptionsValidator(ResType),
+        serializer=EnumSerializer(ResType),
+    )
     # Auto grouping sensitivity (1-200): >100 enables extra-lenient matching for mixed regions
-    ci_grouping_threshold = RangeConfigItem("palette", "grouping_threshold", 33, RangeValidator(1, 200))
+    ci_grouping_threshold = RangeConfigItem(
+        "palette", "grouping_threshold", 33, RangeValidator(1, 200)
+    )
 
-
-    ci_produce_color_report = ConfigItem("palette", "produce_color_report", False, BoolValidator())
-    ci_produce_metadata_json = ConfigItem("palette", "produce_metadata_json", False, BoolValidator())
-    ci_palette_row_height = RangeConfigItem("palette", "palette_row_height", 4, RangeValidator(4, 16))
-    ci_palette_color_iteration = RangeConfigItem("palette", "palette_color_iteration", 1000, RangeValidator(100, 2000))
+    ci_produce_color_report = ConfigItem(
+        "palette", "produce_color_report", False, BoolValidator()
+    )
+    ci_produce_metadata_json = ConfigItem(
+        "palette", "produce_metadata_json", False, BoolValidator()
+    )
+    ci_palette_row_height = RangeConfigItem(
+        "palette", "palette_row_height", 4, RangeValidator(4, 16)
+    )
+    ci_palette_color_iteration = RangeConfigItem(
+        "palette", "palette_color_iteration", 1000, RangeValidator(100, 2000)
+    )
     ci_suffix = ConfigItem("palette", "suffix", "_d")
     ci_exclude = ConfigItem("palette", "exclude", "")
     ci_advanced_quant = ConfigItem("palette", "advanced_quant", False, BoolValidator())
     ci_include_subdirs = ConfigItem("palette", "include_subdirs", True, BoolValidator())
     ci_group_name = ConfigItem("palette", "group_name", "")
-    ci_lower_quant_factor = OptionsConfigItem("palette", "lower_quant_factor", 1.0, OptionsValidator([1.0, 0.5]))
-    ci_use_faster_sort = ConfigItem("palette", "faster_color_sort", True, BoolValidator())
-    ci_replace_existing = ConfigItem("palette", "replace_existing", False, BoolValidator())
+    ci_lower_quant_factor = OptionsConfigItem(
+        "palette", "lower_quant_factor", 1.0, OptionsValidator([1.0, 0.5])
+    )
+    ci_use_faster_sort = ConfigItem(
+        "palette", "faster_color_sort", True, BoolValidator()
+    )
+    ci_replace_existing = ConfigItem(
+        "palette", "replace_existing", False, BoolValidator()
+    )
     ci_single_palette = ConfigItem("palette", "single_palette", True, BoolValidator())
-    ci_palette_use_original_colors = ConfigItem("palette", "palette_use_original_colors", True, BoolValidator())
-    ci_palette_original_max_de = RangeConfigItem("palette", "palette_original_max_de", 2.0, RangeValidator(0.0, 20.0))
+    ci_palette_use_original_colors = ConfigItem(
+        "palette", "palette_use_original_colors", True, BoolValidator()
+    )
+    ci_palette_original_max_de = RangeConfigItem(
+        "palette", "palette_original_max_de", 2.0, RangeValidator(0.0, 20.0)
+    )
     ci_extra_logging = ConfigItem("palette", "extra_logging", False, BoolValidator())
     # Greyscale post-processing
-    ci_greyscale_post_enable = ConfigItem("palette", "greyscale_post_enable", False, BoolValidator())
+    ci_greyscale_post_enable = ConfigItem(
+        "palette", "greyscale_post_enable", False, BoolValidator()
+    )
     ci_greyscale_post_method = OptionsConfigItem(
-        "palette", "greyscale_post_method", "median",
-        OptionsValidator(["none", "median", "gaussian", "dither", "median_dither", "gaussian_dither"]))
-    ci_greyscale_median_size = RangeConfigItem("palette", "greyscale_median_size", 3, RangeValidator(1, 9))
-    ci_greyscale_blur_radius = RangeConfigItem("palette", "greyscale_blur_radius", 6, RangeValidator(1, 30))
-    ci_greyscale_dither_amount = RangeConfigItem("palette", "greyscale_dither_amount", 2, RangeValidator(0, 100))
-    ci_greyscale_post_apply_to_textures = ConfigItem("palette", "greyscale_post_apply_to_textures", False, BoolValidator())
-    ci_quantize_post_enable = ConfigItem("palette", "quantize_post_enable", True, BoolValidator())
+        "palette",
+        "greyscale_post_method",
+        "median",
+        OptionsValidator(
+            ["none", "median", "gaussian", "dither", "median_dither", "gaussian_dither"]
+        ),
+    )
+    ci_greyscale_median_size = RangeConfigItem(
+        "palette", "greyscale_median_size", 3, RangeValidator(1, 9)
+    )
+    ci_greyscale_blur_radius = RangeConfigItem(
+        "palette", "greyscale_blur_radius", 6, RangeValidator(1, 30)
+    )
+    ci_greyscale_dither_amount = RangeConfigItem(
+        "palette", "greyscale_dither_amount", 2, RangeValidator(0, 100)
+    )
+    ci_greyscale_post_apply_to_textures = ConfigItem(
+        "palette", "greyscale_post_apply_to_textures", False, BoolValidator()
+    )
+    ci_quantize_post_enable = ConfigItem(
+        "palette", "quantize_post_enable", True, BoolValidator()
+    )
     # Palette upscaling
-    ci_palette_upscale_to_256 = ConfigItem("palette", "palette_upscale_to_256", False, BoolValidator())
-    ci_palette_upscale_sigma = RangeConfigItem("palette", "palette_upscale_sigma", 10, RangeValidator(0, 100))
+    ci_palette_upscale_to_256 = ConfigItem(
+        "palette", "palette_upscale_to_256", False, BoolValidator()
+    )
+    ci_palette_upscale_sigma = RangeConfigItem(
+        "palette", "palette_upscale_sigma", 10, RangeValidator(0, 100)
+    )
     # Quantized image dithering
-    ci_quantize_dither_enable = ConfigItem("palette", "quantize_dither_enable", False, BoolValidator())
+    ci_quantize_dither_enable = ConfigItem(
+        "palette", "quantize_dither_enable", False, BoolValidator()
+    )
     # Palette filtering type: "linear" interpolates colors smoothly, "nearest" preserves exact colors
-    ci_palette_filter_type = OptionsConfigItem("palette", "palette_filter_type", "linear",
-                                                OptionsValidator(["linear", "nearest", "cubic", "gaussian", "cubic_gaussian", "anchored_linear"]))
+    ci_palette_filter_type = OptionsConfigItem(
+        "palette",
+        "palette_filter_type",
+        "linear",
+        OptionsValidator(
+            [
+                "linear",
+                "nearest",
+                "cubic",
+                "gaussian",
+                "cubic_gaussian",
+                "anchored_linear",
+            ]
+        ),
+    )
 
     # Auto preview: after generating grayscale & palette, switch to Palette Preview and load outputs
     ci_auto_preview = ConfigItem("palette", "auto_preview", True, BoolValidator())
@@ -120,38 +204,47 @@ class Config(QConfig):
         "palette",
         "semi_transparent_mode",
         "mask",
-        OptionsValidator(["mask", "nearest_fill", "premultiply_snap", "none"])
+        OptionsValidator(["mask", "nearest_fill", "premultiply_snap", "none"]),
     )
 
     # Optional: Pre-quantize each island's colors to the island size before grayscale/palette
     # If enabled and an island has more unique colors than available indices, we quantize only the
     # island's masked RGB to the island size, then re-apply the mask and continue as normal.
-    ci_island_prequant_enable = ConfigItem("palette", "island_prequant_enable", False, BoolValidator())
+    ci_island_prequant_enable = ConfigItem(
+        "palette", "island_prequant_enable", False, BoolValidator()
+    )
 
     # Optional: Auto-balance island sizes before quantization
     # If enabled, we will shift palette index boundaries between neighboring islands so that
     # under-utilized islands (fewer unique colors than slots) donate slots to overfull islands
     # (more unique colors than slots). This keeps total coverage and ordering while improving
     # fit of colors to available indices. Runs before island pre-quantization.
-    ci_island_autobalance_enable = ConfigItem("palette", "island_autobalance_enable", False, BoolValidator())
+    ci_island_autobalance_enable = ConfigItem(
+        "palette", "island_autobalance_enable", False, BoolValidator()
+    )
 
     # Greyscale mapping strategy
     ci_greyscale_mapping_strategy = OptionsConfigItem(
-        "palette", "greyscale_mapping_strategy", "luminosity",
-        OptionsValidator([
-            "luminosity",  # Default: brightness-based linear mapping
-            "guard_bands_quantile",  # Hybrid: guard bands + quantile distribution
-            "quantile",  # Quantile-based distribution only
-            "guard_bands",  # Simple guard bands with luminosity
-            "nearest_neighbor_reserve",  # Reserve first/last indices, fill with nearest neighbor
-            "color_clustering",  # Hue-based color clustering
-            "perceptual",  # CIE Lab L* perceptual brightness
-            "reverse_luminosity",  # Inverted brightness mapping
-            "alternating_luminosity",  # Alternating direction per island
-            "smoothed_quantile",  # Quantile via smoothed ECDF (histogram blur)
-            "tempered_quantile",  # Blend quantile with linear
-            "spline_quantile"  # Monotone spline through anchor quantiles
-        ]))
+        "palette",
+        "greyscale_mapping_strategy",
+        "luminosity",
+        OptionsValidator(
+            [
+                "luminosity",  # Default: brightness-based linear mapping
+                "guard_bands_quantile",  # Hybrid: guard bands + quantile distribution
+                "quantile",  # Quantile-based distribution only
+                "guard_bands",  # Simple guard bands with luminosity
+                "nearest_neighbor_reserve",  # Reserve first/last indices, fill with nearest neighbor
+                "color_clustering",  # Hue-based color clustering
+                "perceptual",  # CIE Lab L* perceptual brightness
+                "reverse_luminosity",  # Inverted brightness mapping
+                "alternating_luminosity",  # Alternating direction per island
+                "smoothed_quantile",  # Quantile via smoothed ECDF (histogram blur)
+                "tempered_quantile",  # Blend quantile with linear
+                "spline_quantile",  # Monotone spline through anchor quantiles
+            ]
+        ),
+    )
 
     # Folder Renamer
     fr_source_folder = ConfigItem("folder_renamer", "source_folder", "")
@@ -162,61 +255,104 @@ class Config(QConfig):
     mm_master_profile = ConfigItem("modlist_merger", "master_profile", "")
     mm_secondary_profile = ConfigItem("modlist_merger", "secondary_profile", "")
     mm_output_folder = ConfigItem("modlist_merger", "output_folder", "")
-    
+
     # Guard band width for boundary protection (0-2)
-    ci_guard_band_width = RangeConfigItem("palette", "guard_band_width", 1, RangeValidator(0, 2))
-    
+    ci_guard_band_width = RangeConfigItem(
+        "palette", "guard_band_width", 1, RangeValidator(0, 2)
+    )
+
     # Palette smoothing to reduce harsh color transitions (helps with in-game interpolation artifacts)
     ci_palette_smooth_method = OptionsConfigItem(
-        "palette", "palette_smooth_method", "none",
-        OptionsValidator([
-            "none",  # No smoothing (default)
-            "gaussian",  # Gaussian blur: smooth based on spatial proximity
-            "median",  # Median filter: preserves edges better while smoothing
-            "bilateral"  # Bilateral: edge-preserving smoothing (best quality, slower)
-        ]))
-    ci_palette_smooth_strength = RangeConfigItem("palette", "palette_smooth_strength", 30, RangeValidator(0, 100))
+        "palette",
+        "palette_smooth_method",
+        "none",
+        OptionsValidator(
+            [
+                "none",  # No smoothing (default)
+                "gaussian",  # Gaussian blur: smooth based on spatial proximity
+                "median",  # Median filter: preserves edges better while smoothing
+                "bilateral",  # Bilateral: edge-preserving smoothing (best quality, slower)
+            ]
+        ),
+    )
+    ci_palette_smooth_strength = RangeConfigItem(
+        "palette", "palette_smooth_strength", 30, RangeValidator(0, 100)
+    )
 
     # Preserve observed palette indices (anchor protection)
-    ci_preserve_observed_palette_indices = ConfigItem("palette", "preserve_observed_palette_indices", True, BoolValidator())
+    ci_preserve_observed_palette_indices = ConfigItem(
+        "palette", "preserve_observed_palette_indices", True, BoolValidator()
+    )
 
     # Robust per-bin aggregation controls
-    ci_palette_anchor_robust_enable = ConfigItem("palette", "anchor_robust_enable", True, BoolValidator())
-    ci_palette_anchor_deltaE_max = RangeConfigItem("palette", "anchor_deltaE_max", 2.0, RangeValidator(0.0, 50.0))
+    ci_palette_anchor_robust_enable = ConfigItem(
+        "palette", "anchor_robust_enable", True, BoolValidator()
+    )
+    ci_palette_anchor_deltaE_max = RangeConfigItem(
+        "palette", "anchor_deltaE_max", 2.0, RangeValidator(0.0, 50.0)
+    )
 
     # Linear mapping anchor-snap controls (to better match quantized colors while staying smooth)
-    ci_linear_anchor_snap_enable = ConfigItem("palette", "linear_anchor_snap_enable", False, BoolValidator())
+    ci_linear_anchor_snap_enable = ConfigItem(
+        "palette", "linear_anchor_snap_enable", False, BoolValidator()
+    )
     # 0..100 percent; effective snap per color = strength * (1 - d/epsilon)
-    ci_linear_anchor_snap_strength = RangeConfigItem("palette", "linear_anchor_snap_strength", 100, RangeValidator(0, 100))
+    ci_linear_anchor_snap_strength = RangeConfigItem(
+        "palette", "linear_anchor_snap_strength", 100, RangeValidator(0, 100)
+    )
     # ΔE (OpenCV Lab space) within which snapping applies; 0 means exact matches only
-    ci_linear_anchor_snap_epsilon = RangeConfigItem("palette", "linear_anchor_snap_epsilon", 2.0, RangeValidator(0.0, 50.0))
+    ci_linear_anchor_snap_epsilon = RangeConfigItem(
+        "palette", "linear_anchor_snap_epsilon", 2.0, RangeValidator(0.0, 50.0)
+    )
 
     # Smoothed-quantile parameters
-    ci_smoothed_quantile_bins = RangeConfigItem("palette", "smoothed_quantile_bins", 256, RangeValidator(16, 2048))
+    ci_smoothed_quantile_bins = RangeConfigItem(
+        "palette", "smoothed_quantile_bins", 256, RangeValidator(16, 2048)
+    )
     # Sigma in histogram-bin units (stored as float)
-    ci_smoothed_quantile_sigma = RangeConfigItem("palette", "smoothed_quantile_sigma", 1.5, RangeValidator(0.1, 10.0))
+    ci_smoothed_quantile_sigma = RangeConfigItem(
+        "palette", "smoothed_quantile_sigma", 1.5, RangeValidator(0.1, 10.0)
+    )
     # Blend toward linear (0..100) interpreted as 0..1 in code
-    ci_smoothed_quantile_alpha = RangeConfigItem("palette", "smoothed_quantile_alpha", 30, RangeValidator(0, 100))
+    ci_smoothed_quantile_alpha = RangeConfigItem(
+        "palette", "smoothed_quantile_alpha", 30, RangeValidator(0, 100)
+    )
 
     # Bulk palette generator: auto-generate multiple islands vs. single full-size island
     # When False, a single island spanning the full palette range is created for all opaque pixels.
-    ci_bulk_auto_islands = ConfigItem("bulk_palette", "auto_islands", True, BoolValidator())
+    ci_bulk_auto_islands = ConfigItem(
+        "bulk_palette", "auto_islands", True, BoolValidator()
+    )
 
     # Tempered-quantile parameter: blend toward linear (0..100)
-    ci_tempered_quantile_alpha = RangeConfigItem("palette", "tempered_quantile_alpha", 30, RangeValidator(0, 100))
+    ci_tempered_quantile_alpha = RangeConfigItem(
+        "palette", "tempered_quantile_alpha", 30, RangeValidator(0, 100)
+    )
 
     # Spline-quantile parameters
     ci_spline_profile = OptionsConfigItem(
-        "palette", "spline_profile", "even",
-        OptionsValidator(["even", "compressed_ends", "expanded_ends"]))
-    ci_spline_gamma = RangeConfigItem("palette", "spline_gamma", 1.0, RangeValidator(0.2, 3.0))
+        "palette",
+        "spline_profile",
+        "even",
+        OptionsValidator(["even", "compressed_ends", "expanded_ends"]),
+    )
+    ci_spline_gamma = RangeConfigItem(
+        "palette", "spline_gamma", 1.0, RangeValidator(0.2, 3.0)
+    )
 
-    #theme
-    themeColor = ColorConfigItem("QFluentWidgets", "ThemeColor", '#ffa11d', restart=True)
+    # theme
+    themeColor = ColorConfigItem(
+        "QFluentWidgets", "ThemeColor", "#ffa11d", restart=True
+    )
     dpiScale = OptionsConfigItem(
-        "MainWindow", "DpiScale", 1, OptionsValidator([0.75, 0.95, 1, 1.1, 1.25, 1.5, 1.75, 2, "Auto"]), restart=True)
+        "MainWindow",
+        "DpiScale",
+        1,
+        OptionsValidator([0.75, 0.95, 1, 1.1, 1.25, 1.5, 1.75, 2, "Auto"]),
+        restart=True,
+    )
 
-    #matfiles
+    # matfiles
     tex_diffuse_cfg = ConfigItem("material", "tex_diffuse", True, BoolValidator())
     tex_normal_cfg = ConfigItem("material", "tex_normal", True, BoolValidator())
     tex_smoothspec_cfg = ConfigItem("material", "tex_smoothspec", True, BoolValidator())
@@ -231,73 +367,155 @@ class Config(QConfig):
     output_root = ConfigItem("material", "output_root", "")
     folders_cfg = ConfigItem("material", "folders", "")
     excludes_cfg = ConfigItem("material", "excludes", "")
-    grayscale_to_palette_scale_cfg = RangeConfigItem("material", "grayscale_to_palette_scale", 0.0, RangeValidator(0.0, 10.0))
+    grayscale_to_palette_scale_cfg = RangeConfigItem(
+        "material", "grayscale_to_palette_scale", 0.0, RangeValidator(0.0, 10.0)
+    )
     clean_output_cfg = ConfigItem("material", "clean_output", False, BoolValidator())
 
-
-    #esp_renamer
+    # esp_renamer
     author_cfg = ConfigItem("esp_renamer", "author", "")
     description_cfg = ConfigItem("esp_renamer", "description", "")
     match_text_cfg = ConfigItem("esp_renamer", "match_text", "")
 
-    #Subgraph Maker
+    # Subgraph Maker
     cfg_human = ConfigItem("subgraph_maker", "human", True, BoolValidator())
     cfg_power = ConfigItem("subgraph_maker", "powerarmor", True, BoolValidator())
     cfg_mutant = ConfigItem("subgraph_maker", "supermutant", True, BoolValidator())
     cfg_target_anim = ConfigItem("subgraph_maker", "target_anim", "")
     cfg_target_folder = ConfigItem("subgraph_maker", "target_folder", "")
-    cfg_target_prepend = ConfigItem("subgraph_maker", "target_prepend", True, BoolValidator())
+    cfg_target_prepend = ConfigItem(
+        "subgraph_maker", "target_prepend", True, BoolValidator()
+    )
 
-    #NIF
+    # NIF
     data_root_cfg = ConfigItem("nif", "data_root", "")
     last_open_nif = ConfigItem("nif", "last_open_nif", "")
     do_ai_upscale = ConfigItem("nif", "ai_upscaler", False, BoolValidator())
 
-    #Gun Fire Generator
+    # Gun Fire Generator
     gf_input_file = ConfigItem("gun_fire", "input_file", "")
     gf_rpms = ConfigItem("gun_fire", "rpms", "300, 450, 540, 660, 780, 900")
-    gf_shot_count = RangeConfigItem("gun_fire", "shot_count", 12, RangeValidator(1, 100))
-    gf_tail_threshold = RangeConfigItem("gun_fire", "tail_threshold", -35.0, RangeValidator(-100.0, 0.0))
-    gf_pitch_variation = RangeConfigItem("gun_fire", "pitch_variation", 0.5, RangeValidator(0.0, 5.0))
-    gf_gain_variation = RangeConfigItem("gun_fire", "gain_variation", 2.0, RangeValidator(0.0, 20.0))
+    gf_shot_count = RangeConfigItem(
+        "gun_fire", "shot_count", 12, RangeValidator(1, 100)
+    )
+    gf_tail_threshold = RangeConfigItem(
+        "gun_fire", "tail_threshold", -35.0, RangeValidator(-100.0, 0.0)
+    )
+    gf_pitch_variation = RangeConfigItem(
+        "gun_fire", "pitch_variation", 0.5, RangeValidator(0.0, 5.0)
+    )
+    gf_gain_variation = RangeConfigItem(
+        "gun_fire", "gain_variation", 2.0, RangeValidator(0.0, 20.0)
+    )
     gf_jitter_ms = RangeConfigItem("gun_fire", "jitter_ms", 8, RangeValidator(0, 100))
     gf_output_folder = ConfigItem("gun_fire", "output_folder", "")
-    gf_highpass_enabled = ConfigItem("gun_fire", "highpass_enabled", True, BoolValidator())
+    gf_highpass_enabled = ConfigItem(
+        "gun_fire", "highpass_enabled", True, BoolValidator()
+    )
     gf_tilt = RangeConfigItem("gun_fire", "tilt", 0.0, RangeValidator(-10.0, 10.0))
-    gf_base_reinforcement = ConfigItem("gun_fire", "base_reinforcement", False, BoolValidator())
+    gf_base_reinforcement = ConfigItem(
+        "gun_fire", "base_reinforcement", False, BoolValidator()
+    )
+
+    # Laser Fire Generator
+    lf_input_file = ConfigItem("laser_fire", "input_file", "")
+    lf_output_folder = ConfigItem("laser_fire", "output_folder", "")
+    lf_loop_duration_sec = RangeConfigItem(
+        "laser_fire", "loop_duration_sec", 2.0, RangeValidator(0.1, 30.0)
+    )
+    lf_variation_enabled = ConfigItem(
+        "laser_fire", "variation_enabled", True, BoolValidator()
+    )
+    lf_pitch_variation = RangeConfigItem(
+        "laser_fire", "pitch_variation", 0.5, RangeValidator(0.0, 5.0)
+    )
+    lf_gain_variation = RangeConfigItem(
+        "laser_fire", "gain_variation", 2.0, RangeValidator(0.0, 20.0)
+    )
+    lf_tail_threshold = RangeConfigItem(
+        "laser_fire", "tail_threshold", -35.0, RangeValidator(-100.0, 0.0)
+    )
+    lf_highpass_enabled = ConfigItem(
+        "laser_fire", "highpass_enabled", True, BoolValidator()
+    )
+    lf_highpass_cutoff = RangeConfigItem(
+        "laser_fire", "highpass_cutoff", 800, RangeValidator(100, 5000)
+    )
+    lf_tilt = RangeConfigItem("laser_fire", "tilt", 0.0, RangeValidator(-10.0, 10.0))
+    lf_overlap_ratio = RangeConfigItem(
+        "laser_fire", "overlap_ratio", 0.5, RangeValidator(0.1, 0.9)
+    )
+
     textures_dir_cfg = ConfigItem("nif", "textures_dir", "")
     output_dir_cfg = ConfigItem("nif", "output_dir", "")
     mip_flooding = ConfigItem("nif", "mip_flooding", False, BoolValidator())
     color_fill = ConfigItem("nif", "color_fill", False, BoolValidator())
     scale_uvs = ConfigItem("nif", "scale_uvs", False, BoolValidator())
 
-    #Convert To Palette
+    # Convert To Palette
     base_palette_cfg = ConfigItem("convert", "base_palette", "")
     textures = ConfigItem("convert", "textures", "")
     convert_output_dir_cfg = ConfigItem("convert", "output_dir", "")
     convert_dir_cfg = ConfigItem("convert", "input_dir", "")
 
-
     mipflood_check = ConfigItem("validation", "mipflood", True, BoolValidator())
 
-    #Upscaler
-    upscale_normals_cfg = ConfigItem("upscaler", "normals", "4x-Normal-RG0-BC7", OptionsValidator([
-        "4x-Normal-RG0-BC1",
+    # Upscaler
+    upscale_normals_cfg = ConfigItem(
+        "upscaler",
+        "normals",
         "4x-Normal-RG0-BC7",
-        "4x-Normal-RG0"
-    ]))
+        OptionsValidator(["4x-Normal-RG0-BC1", "4x-Normal-RG0-BC7", "4x-Normal-RG0"]),
+    )
 
-    upscale_textures_cfg = ConfigItem("upscaler", "textures", "4x-PBRify_UpscalerV4", OptionsValidator([
+    upscale_textures_cfg = ConfigItem(
+        "upscaler",
+        "textures",
         "4x-PBRify_UpscalerV4",
-        "4xTextures_GTAV_rgt-s_dither",
-        "4x-PBRify_UpscalerSIR-M_V2",
-        "UltraSharpV2",
-        "4xNomosWebPhoto_RealPLKSR"
-    ]))
+        OptionsValidator(
+            [
+                "4x-PBRify_UpscalerV4",
+                "4xTextures_GTAV_rgt-s_dither",
+                "4x-PBRify_UpscalerSIR-M_V2",
+                "UltraSharpV2",
+                "4xNomosWebPhoto_RealPLKSR",
+            ]
+        ),
+    )
+
+    # BSA Extractor
+    bsa_pack_mode = ConfigItem("bsa_extractor", "pack_mode", False, BoolValidator())
+    bsa_format = OptionsConfigItem(
+        "bsa_extractor",
+        "format",
+        "Fallout 4 (-fo4)",
+        OptionsValidator(
+            [
+                "Skyrim SE/AE (-sse)",
+                "Skyrim LE/FO3/FNV (-tes5)",
+                "Fallout 4 (-fo4)",
+                "Fallout 4 DDS (-fo4dds)",
+                "Starfield (-sf1)",
+                "Starfield DDS (-sf1dds)",
+                "Morrowind (-tes3)",
+                "Oblivion (-tes4)",
+            ]
+        ),
+    )
+    bsa_compress = ConfigItem("bsa_extractor", "compress", True, BoolValidator())
+
+    # Audio Extractor
+    audio_include_subdirs = ConfigItem(
+        "audio_extractor", "include_subdirs", True, BoolValidator()
+    )
+    audio_keep_intermediate = ConfigItem(
+        "audio_extractor", "keep_intermediate", False, BoolValidator()
+    )
+
 
 YEAR = 2025
 AUTHOR = "Bryant21"
-VERSION = '2.0.0'
+VERSION = "2.0.0"
 NEXUS_URL = "https://next.nexusmods.com/profile/Bryant21"
 HELP_URL = "https://github.com/Bryant-21/Fallout4Toolbox"
 FEEDBACK_URL = "https://github.com/Bryant-21/Fallout4Toolbox/issues"
@@ -307,6 +525,4 @@ DISCORD_URL = "https://discord.gg/FgKrxdnQdG"
 TEXCONV_EXE = os.path.join(get_app_root(), "resource", "texconv.exe")
 
 cfg = Config()
-qconfig.load(os.path.join(get_app_root(), 'config', 'config.json'), cfg)
-
-
+qconfig.load(os.path.join(get_app_root(), "config", "config.json"), cfg)

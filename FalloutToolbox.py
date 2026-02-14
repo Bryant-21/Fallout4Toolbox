@@ -14,7 +14,6 @@ from src.utils.icons import CustomIcons
 
 
 class FalloutToolboxMainWindow(CustomFluentWindow):
-
     def __init__(self):
         super().__init__()
 
@@ -34,12 +33,14 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         from src.utils.appconfig import cfg
 
         if not CAPABILITIES["mip_flooding"] and cfg.get(cfg.mipflood_check):
-            w = Dialog("MIP Flooding Issue", "MIP Flooding Disabled, Unable to load", self)
+            w = Dialog(
+                "MIP Flooding Issue", "MIP Flooding Disabled, Unable to load", self
+            )
             w.exec()
             cfg.set(cfg.mipflood_check, False)
 
         # Enable Fluent effects when available
-        for attr in ('setMicaEffectEnabled', 'setAcrylicEffectEnabled'):
+        for attr in ("setMicaEffectEnabled", "setAcrylicEffectEnabled"):
             try:
                 fn = getattr(self, attr, None)
                 if callable(fn):
@@ -47,7 +48,7 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
             except Exception:
                 pass
 
-        #from src.widgets.palette_generator import PaletteGenerator
+        # from src.widgets.palette_generator import PaletteGenerator
         from src.widgets.palette_creator import PaletteLUTGenerator
 
         from src.widgets.create_archlist import ArchlistWidget
@@ -68,69 +69,167 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         from src.widgets.folder_renamer_widget import FolderRenamerWidget
         from src.widgets.modlist_merger_widget import ModlistMergerWidget
         from src.widgets.hkx_pack_widget import HKXPackWidget
+        from src.widgets.bsa_extractor_widget import BSAExtractorWidget
+        from src.widgets.audio_extractor_widget import AudioExtractorWidget
         from src.widgets.animation_annotation_extractor import AnnotationExtractorWidget
 
-        self.addSubInterface(DDSResizerWindow(self, "DDS Bulk Resizer"), CustomIcons.BULK.icon(), "DDS Bulk Resizer",
-                             NavigationItemPosition.TOP)
-        self.addSubInterface(DDSInspector(self, "DDS Inspector"), CustomIcons.IMAGE_VIEWER.icon(),
-                             "DDS Inspector", NavigationItemPosition.TOP)
+        self.addSubInterface(
+            DDSResizerWindow(self, "DDS Bulk Resizer"),
+            CustomIcons.BULK.icon(),
+            "DDS Bulk Resizer",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            DDSInspector(self, "DDS Inspector"),
+            CustomIcons.IMAGE_VIEWER.icon(),
+            "DDS Inspector",
+            NavigationItemPosition.TOP,
+        )
 
-        self.addSubInterface(ESPTemplaterWidget(self, "ESP Template Mod Maker"), CustomIcons.PUZZLE.icon(),
-                             "ESP Template Mod Maker",
-                             NavigationItemPosition.TOP)
-        self.addSubInterface(SubGraphMakerWindow(self, "SubGraph Maker"), CustomIcons.GRAPH.icon(stroke=True),
-                             "SubGraph Maker",
-                             NavigationItemPosition.TOP)
-        self.addSubInterface(MaterialToolUI(self, "Material File Copier"), CustomIcons.BGSM.icon(),
-                             "Material File Copier",
-                             NavigationItemPosition.TOP)
-        self.addSubInterface(GunFireGeneratorWidget(self, "Gun Fire Generator"), FIF.MUSIC,
-                             "Gun Fire Generator",
-                             NavigationItemPosition.TOP)
-        self.addSubInterface(ArchlistWidget(self, "Archlist Creator"), FIF.PENCIL_INK, "Archlist Creator",
-                             NavigationItemPosition.TOP)
-        self.addSubInterface(FolderRenamerWidget(self, "Folder Renamer"), CustomIcons.FOLDERRIGHT.icon(stroke=True),
-                             "Folder Renamer", NavigationItemPosition.TOP)
-        self.addSubInterface(ModlistMergerWidget(self, "Modlist Merger"), CustomIcons.COMBINE.icon(),
-                             "Modlist Merger", NavigationItemPosition.TOP)
-        self.addSubInterface(HKXPackWidget(self, "HKX Pack / Unpack"), CustomIcons.FILE_CODE.icon(),
-                             "HKX Pack / Unpack", NavigationItemPosition.TOP)
-        self.addSubInterface(AnnotationExtractorWidget(self, "Annotation Extractor"), CustomIcons.FILE_EDIT.icon(stroke=True),
-                             "Annotation Extractor", NavigationItemPosition.TOP)
+        self.addSubInterface(
+            ESPTemplaterWidget(self, "ESP Template Mod Maker"),
+            CustomIcons.PUZZLE.icon(),
+            "ESP Template Mod Maker",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            SubGraphMakerWindow(self, "SubGraph Maker"),
+            CustomIcons.GRAPH.icon(stroke=True),
+            "SubGraph Maker",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            MaterialToolUI(self, "Material File Copier"),
+            CustomIcons.BGSM.icon(),
+            "Material File Copier",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            GunFireGeneratorWidget(self, "Gun Fire Generator"),
+            FIF.MUSIC,
+            "Gun Fire Generator",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            ArchlistWidget(self, "Archlist Creator"),
+            FIF.PENCIL_INK,
+            "Archlist Creator",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            FolderRenamerWidget(self, "Folder Renamer"),
+            CustomIcons.FOLDERRIGHT.icon(stroke=True),
+            "Folder Renamer",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            ModlistMergerWidget(self, "Modlist Merger"),
+            CustomIcons.COMBINE.icon(),
+            "Modlist Merger",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            HKXPackWidget(self, "HKX Pack / Unpack"),
+            CustomIcons.FILE_CODE.icon(),
+            "HKX Pack / Unpack",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            BSAExtractorWidget(self, "BSA Extractor"),
+            CustomIcons.FILE_SEARCH.icon(),
+            "BSA Extractor",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            AudioExtractorWidget(self, "Audio Extractor"),
+            CustomIcons.MUSIC.icon(stroke=True),
+            "Audio Extractor",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            AnnotationExtractorWidget(self, "Annotation Extractor"),
+            CustomIcons.FILE_EDIT.icon(stroke=True),
+            "Annotation Extractor",
+            NavigationItemPosition.TOP,
+        )
         self.navigationInterface.addSeparator()
-        self.addSubInterface(PaletteLUTGenerator(self, "Palette Generator"), CustomIcons.PALETTE_2.icon(stroke=True),
-                             "Palette Generator", NavigationItemPosition.TOP)
-        self.addSubInterface(BulkPaletteGeneratorWidget(self, "Bulk Palette Generator"), CustomIcons.BULK_EDIT.icon(),
-                             "Bulk Palette Generator", NavigationItemPosition.TOP)
-        self.addSubInterface(PaletteApplier(self, "Palette Preview"), CustomIcons.PREVIEW_FILE.icon(),
-                             "Palette Preview", NavigationItemPosition.TOP)
-        self.addSubInterface(AddToPaletteWidget(self, "Add To Palette"), CustomIcons.IMAGE_CIRCLE.icon(stroke=True),
-                             "Add To Palette", NavigationItemPosition.TOP)
-        self.addSubInterface(PaletteAdjuster(self, "Palette Adjuster"), CustomIcons.COLORS_SQUARE.icon(stroke=True),
-                             "Palette Adjuster", NavigationItemPosition.TOP)
+        self.addSubInterface(
+            PaletteLUTGenerator(self, "Palette Generator"),
+            CustomIcons.PALETTE_2.icon(stroke=True),
+            "Palette Generator",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            BulkPaletteGeneratorWidget(self, "Bulk Palette Generator"),
+            CustomIcons.BULK_EDIT.icon(),
+            "Bulk Palette Generator",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            PaletteApplier(self, "Palette Preview"),
+            CustomIcons.PREVIEW_FILE.icon(),
+            "Palette Preview",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            AddToPaletteWidget(self, "Add To Palette"),
+            CustomIcons.IMAGE_CIRCLE.icon(stroke=True),
+            "Add To Palette",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            PaletteAdjuster(self, "Palette Adjuster"),
+            CustomIcons.COLORS_SQUARE.icon(stroke=True),
+            "Palette Adjuster",
+            NavigationItemPosition.TOP,
+        )
         self.navigationInterface.addSeparator()
-        self.addSubInterface(ImageQuantizerWidget(self, "Image Quantizer"), CustomIcons.QUANT.icon(), "Image Quantizer",
-                             NavigationItemPosition.TOP)
-
+        self.addSubInterface(
+            ImageQuantizerWidget(self, "Image Quantizer"),
+            CustomIcons.QUANT.icon(),
+            "Image Quantizer",
+            NavigationItemPosition.TOP,
+        )
 
         if CAPABILITIES["mip_flooding"]:
             from src.widgets.mip_flooding import MipFloodingWidget
-            self.addSubInterface(MipFloodingWidget(self, "MIP Flooding"), CustomIcons.FLOOD.icon(), "MIP Flooding", NavigationItemPosition.TOP)
 
-        self.addSubInterface(UVPaddingRemoverWidget(self, "Bulk NIF UV Cleaner (WIP)"),
-                             CustomIcons.CUT_FILM.icon(), "Bulk NIF UV Cleaner (WIP)", NavigationItemPosition.TOP)
-        self.addSubInterface(SingleModelUVPadWidget(self, "Single NIF UV Cleaner"),
-                             CustomIcons.CUBE.icon(stroke=True), "Single NIF UV Cleaner", NavigationItemPosition.TOP)
+            self.addSubInterface(
+                MipFloodingWidget(self, "MIP Flooding"),
+                CustomIcons.FLOOD.icon(),
+                "MIP Flooding",
+                NavigationItemPosition.TOP,
+            )
+
+        self.addSubInterface(
+            UVPaddingRemoverWidget(self, "Bulk NIF UV Cleaner (WIP)"),
+            CustomIcons.CUT_FILM.icon(),
+            "Bulk NIF UV Cleaner (WIP)",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            SingleModelUVPadWidget(self, "Single NIF UV Cleaner"),
+            CustomIcons.CUBE.icon(stroke=True),
+            "Single NIF UV Cleaner",
+            NavigationItemPosition.TOP,
+        )
 
         if CAPABILITIES["ChaiNNer"]:
             from src.widgets.upscale import UpscaleWidget
-            self.addSubInterface(UpscaleWidget(self, "Upscale"), CustomIcons.ENHANCE.icon(), "Upscale", NavigationItemPosition.TOP)
 
-        self.addSubInterface(MainSettings(self), FIF.SETTING, 'Settings', NavigationItemPosition.BOTTOM)
+            self.addSubInterface(
+                UpscaleWidget(self, "Upscale"),
+                CustomIcons.ENHANCE.icon(),
+                "Upscale",
+                NavigationItemPosition.TOP,
+            )
+
+        self.addSubInterface(
+            MainSettings(self), FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM
+        )
 
         self.navigationInterface.expand()
         self.splashScreen.finish()
-
 
     def show_progress(self):
         self.setEnabled(False)
@@ -140,7 +239,7 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         self.ring.show()
 
     def update_progress(self, value: int):
-        #self.ring.setValue(value)
+        # self.ring.setValue(value)
         pass
 
     def complete_loader(self):
@@ -149,7 +248,7 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         self.setEnabled(True)
 
     def setupWindow(self):
-        self.setWindowTitle(f'Fallout Tools - {VERSION}')
+        self.setWindowTitle(f"Fallout Tools - {VERSION}")
 
         screen = self.window().screen()
         desktop = screen.availableGeometry()
@@ -190,10 +289,10 @@ def main():
     try:
         # Configure the logger
         root_logger = setup_logging()
-        logger = logging.getLogger('main')
+        logger = logging.getLogger("main")
     except Exception as e:
         traceback.print_exc()
-        logger = logging.getLogger('main')
+        logger = logging.getLogger("main")
         logger.debug("Unable to Start FallTalk Logging", e)
 
     if QtWidgets is None:
