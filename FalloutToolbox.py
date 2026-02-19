@@ -54,9 +54,11 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         from src.widgets.create_archlist import ArchlistWidget
         from src.widgets.esp_template_renamer_tool import ESPTemplaterWidget
         from src.widgets.dds_resizer import DDSResizerWindow
+        from src.widgets.dds_png_exporter import DDSPNGExporterWindow
         from src.widgets.dds_inspector import DDSInspector
         from src.widgets.matfiles_copy import MaterialToolUI
         from src.widgets.gun_fire_generator import GunFireGeneratorWidget
+        from src.widgets.laser_beam_generator import LaserBeamGeneratorWidget
         from src.settings.settings_widget import MainSettings
         from src.widgets.subgraph_maker import SubGraphMakerWindow
         from src.widgets.image_quantizer import ImageQuantizerWidget
@@ -72,7 +74,14 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
         from src.widgets.bsa_extractor_widget import BSAExtractorWidget
         from src.widgets.audio_extractor_widget import AudioExtractorWidget
         from src.widgets.animation_annotation_extractor import AnnotationExtractorWidget
+        from src.widgets.substance_tbr import SubstanceTBRWidget
 
+        self.addSubInterface(
+            SubstanceTBRWidget(self, "Substance TBR"),
+            FIF.PALETTE,
+            "Substance TBR",
+            NavigationItemPosition.TOP,
+        )
         self.addSubInterface(
             DDSResizerWindow(self, "DDS Bulk Resizer"),
             CustomIcons.BULK.icon(),
@@ -83,6 +92,13 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
             DDSInspector(self, "DDS Inspector"),
             CustomIcons.IMAGE_VIEWER.icon(),
             "DDS Inspector",
+            NavigationItemPosition.TOP,
+        )
+
+        self.addSubInterface(
+            DDSPNGExporterWindow(self, "DDS → PNG Exporter"),
+            CustomIcons.IMAGE_VIEWER.icon(),
+            "DDS → PNG Exporter",
             NavigationItemPosition.TOP,
         )
 
@@ -108,6 +124,12 @@ class FalloutToolboxMainWindow(CustomFluentWindow):
             GunFireGeneratorWidget(self, "Gun Fire Generator"),
             FIF.MUSIC,
             "Gun Fire Generator",
+            NavigationItemPosition.TOP,
+        )
+        self.addSubInterface(
+            LaserBeamGeneratorWidget(self, "Laser Beam Generator"),
+            FIF.MUSIC,
+            "Laser Beam Generator",
             NavigationItemPosition.TOP,
         )
         self.addSubInterface(

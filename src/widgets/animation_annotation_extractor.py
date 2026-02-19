@@ -1,6 +1,7 @@
 import os
 import xml.etree.ElementTree as ET
-from typing import Optional, List, Dict, Set
+from typing import Optional, List, Set
+
 from PySide6 import QtWidgets
 from PySide6.QtCore import QThread, Signal
 from qfluentwidgets import (
@@ -11,10 +12,10 @@ from qfluentwidgets import (
     FluentIcon as FIF,
 )
 
-from src.utils.filesystem_utils import get_app_root
 from src.utils.helpers import BaseWidget
 from src.utils.icons import CustomIcons
 from src.utils.logging_utils import logger
+
 
 def _is_xml(path: str) -> bool:
     return os.path.splitext(path)[1].lower() == ".xml"
@@ -37,7 +38,7 @@ class AnnotationExtractorWorker(QThread):
         self.output_dir = output_dir
         self.include_subdirs = include_subdirs
         self.global_annotations: Set[str] = set()
-        self.folder_annotations: Dict[str, Set[str]] = {}
+        self.global_event_names: Set[str] = set()
 
     def abort(self):
         self._abort = True
@@ -113,28 +114,36 @@ class AnnotationExtractorWorker(QThread):
 
             if file_annotations:
                 self.global_annotations.update(file_annotations)
-                if rel_dir not in self.folder_annotations:
-                    self.folder_annotations[rel_dir] = set()
-                self.folder_annotations[rel_dir].update(file_annotations)
+
+            # Find all hkobject with class="hkbBehaviorGraphStringData"
+            behavior_string_datas = root.findall(".//hkobject[@class='hkbBehaviorGraphStringData']")
+            file_event_names = set()
+            for bsd in behavior_string_datas:
+                event_names_param = bsd.find("./hkparam[@name='eventNames']")
+                if event_names_param is not None:
+                    for cstring in event_names_param.findall("./hkcstring"):
+                        if cstring.text:
+                            file_event_names.add(cstring.text.strip())
+
+            if file_event_names:
+                self.global_event_names.update(file_event_names)
                 
         except Exception as e:
             logger.warning(f"Failed to process {path}: {e}")
 
     def _write_logs(self):
-        # Global log
-        global_log_path = os.path.join(self.output_dir, "annotations.txt")
-        with open(global_log_path, "w", encoding="utf-8") as f:
+        # Global logs
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        global_annot_path = os.path.join(self.output_dir, "annotations.txt")
+        with open(global_annot_path, "w", encoding="utf-8") as f:
             for annot in sorted(self.global_annotations):
                 f.write(annot + "\n")
 
-        # Folder logs
-        for rel_dir, annots in self.folder_annotations.items():
-            out_folder = os.path.join(self.output_dir, rel_dir)
-            os.makedirs(out_folder, exist_ok=True)
-            folder_log_path = os.path.join(out_folder, "annotations.txt")
-            with open(folder_log_path, "w", encoding="utf-8") as f:
-                for annot in sorted(annots):
-                    f.write(annot + "\n")
+        global_event_path = os.path.join(self.output_dir, "eventNames.txt")
+        with open(global_event_path, "w", encoding="utf-8") as f:
+            for event in sorted(self.global_event_names):
+                f.write(event + "\n")
 
 class AnnotationExtractorWidget(BaseWidget):
     def __init__(self, parent: Optional[QtWidgets.QWidget], text: str = "Annotation Extractor"):

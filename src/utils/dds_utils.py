@@ -34,20 +34,23 @@ def load_image(path, f='RGBA'):
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             # Run texconv to output PNG into tmpdir
-            if os.path.splitext(path)[0].endswith("_n"):
+            # Note: Do not force sRGB for normals; avoid color space changes entirely.
+            if os.path.splitext(path)[0].lower().endswith("_n") or os.path.splitext(path)[0].lower().endswith("_s"):
+                # Ensure a valid DXGI format is requested for PNG expansion
                 cmd = [
                     TEXCONV_EXE,
+                    '-nologo',
                     '-ft', 'PNG',
-                    '-f', 'RGBA',
+                    '-f', 'R8G8B8A8_UNORM',
                     '-y',
                     '-m', '1',
-                    '-srgb', # Force 32-bit RGBA to handle BC5/other special formats
                     path,
                     '-o', tmpdir
                 ]
             else:
                 cmd = [
                     TEXCONV_EXE,
+                    '-nologo',
                     '-ft', 'PNG',
                     '-y',
                     '-m', '1',
@@ -57,8 +60,11 @@ def load_image(path, f='RGBA'):
             logger.debug(f"Running texconv for DDS load: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
-                logger.error(f"texconv failed while reading DDS: {result.stderr}")
-                raise Exception(f"texconv failed while reading DDS: {result.stderr}")
+                stderr = (result.stderr or '').strip()
+                stdout = (result.stdout or '').strip()
+                combined = stderr if stderr else stdout
+                logger.error(f"texconv failed while reading DDS: {combined}")
+                raise Exception(f"texconv failed while reading DDS: {combined}")
 
             # texconv outputs a PNG with same basename but .PNG extension
             base = os.path.splitext(os.path.basename(path))[0]
