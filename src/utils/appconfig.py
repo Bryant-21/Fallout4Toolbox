@@ -141,6 +141,11 @@ class Config(QConfig):
         "palette", "palette_original_max_de", 2.0, RangeValidator(0.0, 20.0)
     )
     ci_extra_logging = ConfigItem("palette", "extra_logging", False, BoolValidator())
+
+    # HKX Watcher
+    hkx_watch_dirs = ConfigItem("hkx_watcher", "watch_dirs", []) # List of strings: "path|include_subdirs"
+    hkx_watch_enabled = ConfigItem("hkx_watcher", "enabled", False, BoolValidator())
+
     # Greyscale post-processing
     ci_greyscale_post_enable = ConfigItem(
         "palette", "greyscale_post_enable", False, BoolValidator()
@@ -510,6 +515,23 @@ class Config(QConfig):
     )
     audio_keep_intermediate = ConfigItem(
         "audio_extractor", "keep_intermediate", False, BoolValidator()
+    )
+
+    # Papyrus Decompiler
+    papyrus_include_subdirs = ConfigItem(
+        "papyrus_decompiler", "include_subdirs", True, BoolValidator()
+    )
+    papyrus_recreate_subdirs = ConfigItem(
+        "papyrus_decompiler", "recreate_subdirs", False, BoolValidator()
+    )
+    papyrus_assemble = ConfigItem(
+        "papyrus_decompiler", "assemble", False, BoolValidator()
+    )
+    papyrus_comment = ConfigItem(
+        "papyrus_decompiler", "comment", False, BoolValidator()
+    )
+    papyrus_threaded = ConfigItem(
+        "papyrus_decompiler", "threaded", True, BoolValidator()
     )
 
 

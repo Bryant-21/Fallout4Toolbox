@@ -6,19 +6,19 @@ Converts Fallout 4 TBR specular maps to Substance Painter PBR values
 
 from PySide6.QtCore import Qt, QRegularExpression
 from PySide6.QtGui import QRegularExpressionValidator
-from PySide6.QtWidgets import (QVBoxLayout,
-                               QLabel, QSpinBox, QGroupBox, QGridLayout, QLineEdit)
+from PySide6.QtWidgets import (QLabel, QSpinBox, QGroupBox, QGridLayout, QLineEdit)
 
 from src.utils.helpers import BaseWidget
 
 
 class SubstanceTBRWidget(BaseWidget):
     def __init__(self, parent=None, title="Substance TBR"):
-        super().__init__(title, parent)
+        super().__init__(title, parent, vertical=True)
         self.setObjectName(title.replace(" ", "-"))
         self._updating = False
 
-        main_layout = QVBoxLayout(self)
+        # Use BaseWidget's layout
+        main_layout = self.boxLayout
 
         # Title
         title_label = QLabel("Fallout 4 TBR Specular Map Converter")
